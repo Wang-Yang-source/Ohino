@@ -392,7 +392,10 @@ void TL_Viewport::ZoomToFit(const ON_BoundingBox& world_bbox, double margin)
   const ON_3dVector up = ScreenUp();
 
   ON_3dPoint corners[8];
-  const int n = world_bbox.GetCorners(corners);
+  // NOTE: ON_BoundingBox::GetCorners returns bool, not a count -- treating its return
+  // value as `n` silently reduced the fit to a single corner.
+  const bool have_corners = world_bbox.GetCorners(corners);
+  const int n = have_corners ? 8 : 0;
   double max_x = 0.0;
   double max_y = 0.0;
   double max_r = 0.0;

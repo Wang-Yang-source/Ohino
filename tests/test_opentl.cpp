@@ -1867,10 +1867,10 @@ void TestSweep1Rail() {
 // ============================================================================
 
 void TestVulkanRenderer() {
-  BeginSection("Vulkan four-view offscreen renderer");
+  BeginSection("Vulkan four-view renderer (Catppuccin Mocha, MSAA, depth)");
 
   opentl::mvp::SceneDocument document;
-  const int layer = document.AddLayer("Curves", 90, 200, 255, true);
+  const int layer = document.AddLayer("Curves", 137, 180, 250, true);  // Catppuccin Blue
   CHECK(layer >= 0);
   document.AddCircle(ON_Circle(ON_Plane::World_xy, 5.0), "circle", "Curves");
   document.AddLine(ON_Line(ON_3dPoint(-8.0, 0.0, 0.0), ON_3dPoint(8.0, 3.0, 2.0)), "line", "Curves");
@@ -1880,15 +1880,39 @@ void TestVulkanRenderer() {
       ON_3dPoint(6.0, -2.0, 2.0) },
     3, "spline", "Curves");
 
+  // A swept tube so the triangle pipeline has real geometry to shade.
+  ON_ArcCurve rail(ON_Arc(ON_Plane(ON_3dPoint(-6.0, -6.0, 0.0), ON_3dVector::ZAxis), 9.0, ON_PI));
+  ON_ArcCurve profile(ON_Circle(ON_Plane::World_xy, 1.6));
+  ON_NurbsSurface* swept = TL_Sweep1Rail(rail, profile, 20, nullptr);
+  CHECK(nullptr != swept);
+  ON_Mesh* tube = (nullptr != swept) ? TL_MeshSurfaceGrid(*swept, 40, 64, nullptr) : nullptr;
+  CHECK(nullptr != tube);
+  if (nullptr != tube) {
+    tube->ComputeFaceNormals();
+    tube->ComputeVertexNormals();
+  }
+  std::vector<const ON_Mesh*> meshes;
+  if (nullptr != tube) meshes.push_back(tube);
+
   TL_FourViewLayout layout = TL_FourViewLayout::Default(960, 540);
-  layout.ZoomToFitAll(document.GetSceneBoundingBox(), 0.9);
+  ON_BoundingBox bbox = document.GetSceneBoundingBox();
+  ON_BoundingBox tube_box;
+  if (nullptr != tube && tube->GetBoundingBox(tube_box) && tube_box.IsValid())
+    bbox.Union(tube_box);
+  layout.ZoomToFitAll(bbox, 0.9);
 
   TL_VulkanFourViewRenderer renderer;
   TL_VulkanRenderResult result;
-  const bool ok = renderer.RenderScene(document, layout, result);
+  TL_VulkanRenderOptions options;
+  options.sample_count = 4;
+  options.enable_depth = true;
+  options.enable_shaded_meshes = true;
+  const bool ok = renderer.RenderScene(document, layout, result, meshes, options);
 
   if (!ok && result.error.find("without Vulkan support") != std::string::npos) {
     std::printf("     [SKIP] build has no Vulkan backend: %s\n", result.error.c_str());
+    delete tube;
+    delete swept;
     EndSection();
     return;
   }
@@ -1898,12 +1922,29 @@ void TestVulkanRenderer() {
   CHECK_EQ_INT(result.height, 540);
   CHECK(result.rgba.size() == static_cast<size_t>(result.width) * result.height * 4);
   CHECK(result.vertex_count > 0);
-  CHECK(result.device_name.find("llvm") == std::string::npos); // sanity: a real device name
+  CHECK(result.device_name.find("llvm") == std::string::npos);
   CHECK(!result.backend_name.empty());
 
+  // Theme + pipeline state that this stage added.
+  CHECK(result.theme_name == "Catppuccin Mocha");
+  CHECK(result.msaa_samples >= 1);
+  CHECK_MSG(result.msaa_samples == 4 || result.msaa_samples == 8 || result.msaa_samples == 2,
+            "MSAA requested 4x but the device reported " + std::to_string(result.msaa_samples));
+  CHECK(result.depth_enabled);
+  CHECK(result.triangle_count > 0);
+
   if (ok) {
-    // The framebuffer must not be a single flat colour: the grid, the axes and the
-    // geometry all contribute distinct pixels.
+    // Background is Catppuccin Crust (#11111b). Sample a few pixels well inside a
+    // panel and away from the border/accent strip.
+    int dark = 0;
+    const int samples_xy[3][2] = { { 7, 7 }, { 7, 40 }, { 40, 7 } };
+    for (const auto& xy : samples_xy) {
+      const size_t i = (static_cast<size_t>(xy[1]) * result.width + xy[0]) * 4;
+      if (result.rgba[i] <= 40 && result.rgba[i + 1] <= 40 && result.rgba[i + 2] <= 50)
+        ++dark;
+    }
+    CHECK_MSG(dark >= 2, "background samples are not the Crust colour");
+
     size_t distinct = 0;
     for (size_t i = 0; i + 3 < result.rgba.size(); i += 4 * 997) {
       const uint8_t* p = result.rgba.data() + i;
@@ -1912,19 +1953,54 @@ void TestVulkanRenderer() {
     }
     CHECK_MSG(distinct > 20, "distinct sampled pixels = " + std::to_string(distinct));
 
-    // The four viewport borders must be present: sample the exact centre column/row
-    // boundaries and look for a non-background pixel near each border coordinate.
-    const size_t border_x = static_cast<size_t>(result.width / 2);
-    bool found_horizontal_border = false;
-    for (int y = 0; y < result.height; ++y) {
-      const size_t index = (static_cast<size_t>(y) * result.width + border_x) * 4;
-      if (index + 2 < result.rgba.size()) {
-        const uint8_t* p = result.rgba.data() + index;
-        if (p[0] > 60 || p[1] > 60 || p[2] > 60)
-          found_horizontal_border = true;
+    // Depth test: a huge quad placed well in front of the XZ grid must hide that grid.
+    // Counting grid-coloured pixels inside the FRONT viewport is a direct measurement
+    // of whether depth testing is live (this caught GetCorners returning bool).
+    auto count_grid_pixels = [](const TL_VulkanRenderResult& r) {
+      int count = 0;
+      const int x0 = 2;
+      const int x1 = r.width / 2 - 2;
+      const int y0 = r.height / 2 + 2;
+      const int y1 = r.height - 2;
+      for (int y = y0; y < y1; ++y) {
+        for (int x = x0; x < x1; ++x) {
+          const size_t i = (static_cast<size_t>(y) * r.width + x) * 4;
+          if (std::abs(static_cast<int>(r.rgba[i]) - 49) <= 6 &&
+              std::abs(static_cast<int>(r.rgba[i + 1]) - 50) <= 6 &&
+              std::abs(static_cast<int>(r.rgba[i + 2]) - 68) <= 6)
+            ++count;
+        }
       }
-    }
-    CHECK_MSG(found_horizontal_border, "viewport content missing in the centre column");
+      return count;
+    };
+
+    TL_FourViewLayout probe_layout = TL_FourViewLayout::Default(800, 600);
+    const int baseline_grid = [&]() {
+      TL_VulkanRenderResult r;
+      renderer.RenderScene(opentl::mvp::SceneDocument(), probe_layout, r, {},
+                           TL_VulkanRenderOptions());
+      return count_grid_pixels(r);
+    }();
+
+    ON_Mesh near_quad(1, 4, false, false);
+    near_quad.SetVertex(0, ON_3dPoint(-30.0, -8.0, -30.0));
+    near_quad.SetVertex(1, ON_3dPoint(30.0, -8.0, -30.0));
+    near_quad.SetVertex(2, ON_3dPoint(30.0, -8.0, 30.0));
+    near_quad.SetVertex(3, ON_3dPoint(-30.0, -8.0, 30.0));
+    near_quad.SetQuad(0, 0, 1, 2, 3);
+    near_quad.ComputeFaceNormals();
+    near_quad.ComputeVertexNormals();
+
+    TL_VulkanRenderResult occluded;
+    std::vector<const ON_Mesh*> near_meshes{ &near_quad };
+    renderer.RenderScene(opentl::mvp::SceneDocument(), probe_layout, occluded, near_meshes,
+                         TL_VulkanRenderOptions());
+    const int occluded_grid = count_grid_pixels(occluded);
+
+    CHECK_MSG(baseline_grid > 0, "baseline grid pixels = " + std::to_string(baseline_grid));
+    CHECK_MSG(occluded_grid == 0,
+              "grid pixels behind the near quad = " + std::to_string(occluded_grid) +
+                " (depth test not applied)");
   }
 
   // ---- PNG persistence ------------------------------------------------
@@ -1954,18 +2030,19 @@ void TestVulkanRenderer() {
           static_cast<uint32_t>(header[23]);
         CHECK_EQ_INT(png_width, static_cast<uint32_t>(result.width));
         CHECK_EQ_INT(png_height, static_cast<uint32_t>(result.height));
-        CHECK_EQ_INT(header[24], 8); // bit depth
-        CHECK_EQ_INT(header[25], 6); // RGBA
+        CHECK_EQ_INT(header[24], 8);
+        CHECK_EQ_INT(header[25], 6);
       }
       std::remove(path.c_str());
     }
 
-    // Reject malformed buffers instead of writing a broken file.
     std::string bad_error;
     CHECK(!TL_VulkanFourViewRenderer::SavePng(path, 0, 10, std::vector<uint8_t>(), &bad_error));
     CHECK(!bad_error.empty());
   }
 
+  delete tube;
+  delete swept;
   EndSection();
 }
 

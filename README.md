@@ -507,6 +507,25 @@ layout.View(1).ScreenToRay(screen, from, dir);               // 透视拾取射�
 
 实测：`vulkan.backend=Vulkan 1.2.357`、`vulkan.device=Apple M4`、`vertices=1828`、`fourview.png` 5760000 B（1600×900×4 读回）。
 
+#### 阶段 5：Catppuccin Mocha 主题 + 4× MSAA + 深度缓冲 + 着色曲面
+
+| 能力 | 实现 |
+| --- | --- |
+| 配色 | `TL_CatppuccinMochaTheme`（Crust/Base/Surface0-2/Overlay0/Text + Red/Green/Blue/Yellow/Sapphire/Mauve/Peach/Teal/Lavender）；背景 `#11111b`，网格 `#313244/#45475a`，轴 `#f38ba8/#a6e3a1/#89b4fa`，原点 `#f9e2af`，曲面 `#cba6f7`，UI `#b4befe` |
+| MSAA | `VK_SAMPLE_COUNT_4_BIT`（按 `framebufferColorSampleCounts ∩ DepthSampleCounts` 探测，实际值写回 `result.msaa_samples`），多采样颜色附件 + resolve 附件 |
+| 深度 | `VK_FORMAT_D32_SFLOAT`（不可用时回退 D24S8 / D16），`VK_COMPARE_OP_LESS_OR_EQUAL`，每帧清 1.0 |
+| 着色曲面 | 第二个 `TRIANGLE_LIST` 管线：顶点 = 像素坐标 + 法线 + RGBA，顶点着色器做 Lambert + Blinn-Phong（`0.44 + 0.72·N·L` + 高光），优先使用网格顶点法线做光滑着色 |
+| 绘制顺序 | 先三角形（写深度）后线框；只有**场景线框**带 2e-4 的近视偏置，网格/坐标轴/边框/标签不偏置，因此会被实体正确遮挡 |
+| 主题名 | `result.theme_name = "Catppuccin Mocha"` |
+
+```bash
+./opentl/build/opentl_cli --render-vulkan --scene demo --out-dir /tmp/opentl_vk
+# vulkan.theme=Catppuccin Mocha msaa=4x depth=D32_SFLOAT
+# vulkan.canvas=1600x900 vertices=2160 triangles=21504
+```
+
+**深度测试是被测量过的，不是被假设的**：测试把一块 ±30 的大四边形放在 FRONT 视口构造平面前方，统计视口内「网格颜色」像素数——基线 >0，遮挡后必须为 0。这条断言正是发现 `ON_BoundingBox::GetCorners` 返回 `bool`（被误当成角点数量）的地方：该错误让深度窗口塌缩到单个角点，整幅图的深度值几乎相同，深度测试退化成画家算法，于是出现「实体被网格穿透 + 锯齿状三角缺口」。
+
 ### 4.5 双格式文件序列化能力
 
 OpenTL 同时提供**两种互补**的持久化格式：一种为零依赖、可逐字节比对的本地格式；一种为与 Rhino 生态互通的工业格式。
@@ -664,10 +683,10 @@ cmake --build build --config Release -j8
 > | 项目 | 结果 |
 > | --- | --- |
 > | clean build（删除 `build/` 后重新配置） | 通过，0 error；`opentl/src`、`apps`、`tests` 0 warning（其余 warning 均来自 openNURBS/zlib 第三方源码） |
-> | `opentl_tests` | 16 个测试组、763 项检查、0 失败 |
+> | `opentl_tests` | 16 个测试组、772 项检查、0 失败 |
 > | `ctest` | 4/4 通过（`opentl_tests`、`opentl_cli_demo`、`opentl_cli_views`、`opentl_cli_vulkan`） |
 > | 四视图布局往返 | `opentl_cli --views` 退出码 0，`views.roundtrip=identical` |
-> | Vulkan 四视图渲染 | `vulkan.device=Apple M4`、`vulkan.backend=Vulkan 1.2.357`、1600×900 PNG 写出成功 |
+> | Vulkan 四视图渲染 | `vulkan.device=Apple M4`、`vulkan.backend=Vulkan 1.2.357`、`msaa=4x`、`depth=D32_SFLOAT`、1600×900 PNG 写出成功 |
 > | CLI 端到端演示 | 退出码 0，`io.roundtrip json_digest_identical=1 3dm_digest_identical=1` |
 > | 场景摘要哈希 | `scene_digest=a9b93db0b90a1441`（两次独立运行完全一致） |
 > | `.otscene.json` 确定性 | 两次运行 SHA-256 相同：`8b4831c9c911fbe1d5b5033695ca680b02a21c179ad7b6408cd4f2e835ab519f` |
@@ -972,7 +991,7 @@ MVP 的目标是**打通一条端到端可验证的链路**（几何 → 场景 
 - **证据合订本已落盘，但三层链并非处处闭合**。`re-database/rea/mvp_static_evidence.json` 已记录 12 个函数、1 297 条逐指令清单、80 个唯一 IAT 目标，三层校验 26/29 通过。未通过的 3 项集中在 `tl.dll` 侧：`TL_3DX_LineXPlane`、`TL_GetClosestPoint`（4 参/7 参重载）在导出表中存在，但 `three_tier_full_map.json` 中没有指向它们的 tier-2 → tier-3 引用边，因此**只有"导出存在"这一层证据**，其内部实现是按数学等价重写的（`re-database/rea/mvp_static_evidence.json` 的 `functions[].opentl_status` 已逐项标注 `gap` / `partial` / `declared_no_implementation`）。不要把这三项当作"逐指令对齐"。
 - **三处注释/实现曾与二进制不符，已在阶段 3 订正**：`TL_IsMeshEdgeUnwelded`（要求 `m_topf_count == 2` 而非 `<= 1`，判据是"四个网格顶点索引两两互异"）、`TL_Brep::PointIsOnFace`（越界返回 **−1** 而非 0；容差钳位到 `[sqrt(DBL_EPSILON), 1% 面域长度]`；iso 参数分解先于 loop 包含判定）、`TL_DeformableArc2`（结果参数域是**弧长** `[0, Length()]`，不是弧度域）。修正后的行为均有测试断言。
 - **`ON_Curve::IntersectCurve` 不可用**：`external/opennurbs` 版本没有 `ON_X_EVENT`，无法复刻 `ON_Intersect_CurveLine` 的下游路径。次级策略改为自研 `TL_IntersectCurveLineBySubdivision`（Lipschitz 严格下界剪枝 + Newton），用于对拍而非冒充原实现。
-- **四视图只是相机与投影**：`viewport/` 提供世界↔屏幕、拾取射线、平移/缩放/缩放到适合与 JSON 往返，**没有** OpenGL/Metal 渲染、窗口、文字标注或 Gumball。`m_pbox` 类缓存也未实现（`PointIsOnFace` 的 pbox 早退由 trim 曲线采样推导）。
+- **四视图渲染只到线框 + 平面着色**：`viewport/` 提供世界↔屏幕、拾取射线、平移/缩放/缩放到适合、JSON 往返，以及 Vulkan 离屏渲染（Catppuccin Mocha 主题、4× MSAA、D32 深度、Gouraud/Blinn-Phong 着色三角形）。仍然**没有**窗口/交换链、鼠标交互、Gumball、阴影、透明排序与 SSAO。`m_pbox` 类缓存也未实现（`PointIsOnFace` 的 pbox 早退由 trim 曲线采样推导）。
 - **不执行原始二进制**是硬约束：任何"跑一下原 DLL 看看结果"的验证方式都被排除。这既是合规要求，也意味着**没有金标准输出可比对**——正确性依赖数学性质（往返固定点、距离不变性、弧长单调性）与 openNURBS 自身的参考实现，而不是与原产品逐值对齐。
 
 ### 9.5 后续演进的优先级建议

@@ -203,9 +203,9 @@ void BuildDemoScene(DemoScene& scene) {
   if (scene.document.FindLayerByName("Default") < 0) {
     scene.document.AddLayer("Default", 0, 0, 0, true);
   }
-  scene.document.AddLayer("Construction", 128, 128, 128, true);
-  scene.document.AddLayer("Curves", 0, 0, 255, true);
-  scene.document.AddLayer("Reference", 255, 0, 0, true);
+  scene.document.AddLayer("Construction", 108, 112, 134, true);   // Catppuccin Overlay0
+  scene.document.AddLayer("Curves", 137, 180, 250, true);        // Catppuccin Blue
+  scene.document.AddLayer("Reference", 243, 139, 168, true);     // Catppuccin Red
 
   scene.point_id = scene.document.AddPoint(Point3d(1.0, 2.0, 3.0), "Point_A", "Construction");
 
@@ -602,28 +602,64 @@ int RunVulkanRender(const std::string& out_dir, bool use_demo_scene, int* exit_c
     BuildDemoScene(scene);
     document = scene.document;
   } else {
-    document.AddLayer("Curves", 90, 200, 255, true);
+    document.AddLayer("Curves", 116, 199, 236, true);              // Catppuccin Sapphire
     document.AddCircle(ON_Circle(ON_Plane::World_xy, 5.0), "circle", "Curves");
     document.AddPoint(ON_3dPoint(2.0, 3.0, 4.0), "point", "Curves");
   }
 
+  // A shaded surface so the renderer exercises its triangle pipeline: sweep a circle
+  // along a quarter arc, then tessellate it into an ON_Mesh grid.
+  std::vector<ON_Mesh*> owned_meshes;
+  ON_NurbsSurface* swept = nullptr;
+  {
+    ON_ArcCurve rail(ON_Arc(ON_Plane(ON_3dPoint(-6.0, -6.0, 0.0), ON_3dVector::ZAxis), 9.0, ON_PI));
+    ON_ArcCurve profile(ON_Circle(ON_Plane::World_xy, 1.6));
+    swept = TL_Sweep1Rail(rail, profile, 24, nullptr);
+    if (nullptr != swept && swept->IsValid()) {
+      ON_Mesh* mesh = TL_MeshSurfaceGrid(*swept, 72, 128, nullptr);
+      if (nullptr != mesh) {
+        mesh->ComputeFaceNormals();
+        mesh->ComputeVertexNormals();
+        owned_meshes.push_back(mesh);
+      }
+    }
+  }
+
+  std::vector<const ON_Mesh*> meshes;
+  for (const ON_Mesh* mesh : owned_meshes)
+    meshes.push_back(mesh);
+
   TL_FourViewLayout layout = TL_FourViewLayout::Default(1600, 900);
-  const ON_BoundingBox bbox = document.GetSceneBoundingBox();
+  ON_BoundingBox bbox = document.GetSceneBoundingBox();
+  for (const ON_Mesh* mesh : owned_meshes) {
+    ON_BoundingBox mesh_box;
+    if (mesh->GetBoundingBox(mesh_box) && mesh_box.IsValid())
+      bbox.Union(mesh_box);
+  }
   if (bbox.IsValid())
     layout.ZoomToFitAll(bbox, 0.9);
 
   TL_VulkanFourViewRenderer renderer;
   TL_VulkanRenderResult result;
-  const bool rendered = renderer.RenderScene(document, layout, result);
+  TL_VulkanRenderOptions options;
+  options.sample_count = 4;
+  options.enable_depth = true;
+  options.enable_shaded_meshes = true;
+  const bool rendered = renderer.RenderScene(document, layout, result, meshes, options);
 
   std::printf("vulkan.backend=%s\n", result.backend_name.c_str());
   std::printf("vulkan.device=%s\n", result.device_name.c_str());
-  std::printf("vulkan.canvas=%dx%d vertices=%zu\n", result.width, result.height,
-              result.vertex_count);
+  std::printf("vulkan.canvas=%dx%d vertices=%zu triangles=%zu\n", result.width, result.height,
+              result.vertex_count, result.triangle_count);
+  std::printf("vulkan.theme=%s msaa=%dx depth=%s\n", result.theme_name.c_str(),
+              result.msaa_samples, result.depth_enabled ? "D32_SFLOAT" : "disabled");
   std::printf("vulkan.render=%s\n", rendered ? "ok" : "failed");
   if (!rendered) {
     std::printf("vulkan.error=%s\n", result.error.c_str());
     std::printf("vulkan.status=FAILED\n");
+    for (ON_Mesh* mesh : owned_meshes)
+      delete mesh;
+    delete swept;
     if (nullptr != exit_code) *exit_code = 1;
     return 1;
   }
@@ -639,6 +675,9 @@ int RunVulkanRender(const std::string& out_dir, bool use_demo_scene, int* exit_c
   if (!saved)
     std::printf("vulkan.png_error=%s\n", save_error.c_str());
   std::printf("vulkan.status=%s\n", saved ? "OK" : "FAILED");
+  for (ON_Mesh* mesh : owned_meshes)
+    delete mesh;
+  delete swept;
   if (nullptr != exit_code) *exit_code = saved ? 0 : 1;
   return saved ? 0 : 1;
 }
