@@ -612,7 +612,7 @@ int RunVulkanRender(const std::string& out_dir, bool use_demo_scene, int* exit_c
   std::vector<ON_Mesh*> owned_meshes;
   ON_NurbsSurface* swept = nullptr;
   {
-    ON_ArcCurve rail(ON_Arc(ON_Plane(ON_3dPoint(-6.0, -6.0, 0.0), ON_3dVector::ZAxis), 9.0, ON_PI));
+    ON_ArcCurve rail(ON_Arc(ON_Plane(ON_3dPoint(-6.0, -6.0, 1.65), ON_3dVector::ZAxis), 9.0, ON_PI));
     ON_ArcCurve profile(ON_Circle(ON_Plane::World_xy, 1.6));
     swept = TL_Sweep1Rail(rail, profile, 24, nullptr);
     if (nullptr != swept && swept->IsValid()) {
@@ -636,7 +636,9 @@ int RunVulkanRender(const std::string& out_dir, bool use_demo_scene, int* exit_c
   std::vector<TL_SurfaceSurfaceIntersectionBranch> ssx_branches;
   if (nullptr != swept && swept->IsValid()) {
     ON_NurbsSurface plane_patch(3, false, 2, 2, 2, 2);
-    const ON_Plane plane(ON_3dPoint(0.0, 0.0, 0.0), ON_3dVector::ZAxis);
+    ON_3dVector slice_normal(0.0, -0.18, 1.0);
+    slice_normal.Unitize();
+    const ON_Plane plane(ON_3dPoint(0.0, 0.0, 2.20), slice_normal);
     const double half = 22.0;
     plane_patch.SetCV(0, 0, plane.PointAt(-half, -half));
     plane_patch.SetCV(0, 1, plane.PointAt(-half, half));
@@ -653,11 +655,15 @@ int RunVulkanRender(const std::string& out_dir, bool use_demo_scene, int* exit_c
       double worst_error = 0.0;
       int points_total = 0;
       for (const auto& branch : ssx_branches) {
-        std::vector<ON_3dPoint> pts;
-        for (int i = 0; i < branch.points_3d.Count(); ++i)
-          pts.push_back(branch.points_3d[i]);
-        if (pts.size() >= 2)
-          document.AddPolyline(pts, "tube_x_plane", "Intersection");
+        if (nullptr != branch.curve_3d && branch.curve_3d->IsValid()) {
+          document.AddNurbsCurve(*branch.curve_3d, "tube_x_plane", "Intersection");
+        } else {
+          std::vector<ON_3dPoint> pts;
+          for (int i = 0; i < branch.points_3d.Count(); ++i)
+            pts.push_back(branch.points_3d[i]);
+          if (pts.size() >= 2)
+            document.AddPolyline(pts, "tube_x_plane", "Intersection");
+        }
         worst_error = std::max(worst_error, branch.max_error);
         points_total += branch.points_3d.Count();
       }

@@ -162,6 +162,7 @@ struct TL_SurfaceSurfaceIntersectionBranch
   ON_SimpleArray<ON_2dPoint> params_a;      ///< Corresponding (u_a, v_a) parameters on surface A
   ON_SimpleArray<ON_2dPoint> params_b;      ///< Corresponding (u_b, v_b) parameters on surface B
   bool is_closed = false;                   ///< True when the branch forms a closed loop
+  bool is_tangent = false;                  ///< True for tangential contact branches / points
   double max_error = 0.0;                   ///< Measured max distance from curve_3d to both surfaces
 };
 

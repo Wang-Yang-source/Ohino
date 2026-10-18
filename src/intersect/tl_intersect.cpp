@@ -1776,7 +1776,214 @@ bool CorrectSSXNode(const ON_Surface& surface_a, const ON_Surface& surface_b, SS
   return false;
 }
 
-/** 3D intersection direction of two surfaces at a point (unit); false when tangential. */
+/**
+ * Local 2D Gauss-Newton orthogonal projection of a 3D point onto `surface` starting from
+ * `(u_seed, v_seed)`.  Unlike a global grid search, this stays in the caller's parameter
+ * basin and converges to machine precision in a few steps.
+ */
+bool ProjectPointToSurfaceLocal(const ON_Surface& surface, const ON_3dPoint& target,
+                                double u_seed, double v_seed, double& u_out, double& v_out,
+                                ON_3dPoint* closest_pt = nullptr)
+{
+  double u = ClampOrWrap(surface, 0, u_seed);
+  double v = ClampOrWrap(surface, 1, v_seed);
+
+  for (int iter = 0; iter < 16; ++iter)
+  {
+    ON_3dPoint p;
+    ON_3dVector su, sv;
+    if (!EvalSurfaceFrame(surface, u, v, p, su, sv))
+      break;
+
+    const ON_3dVector r = p - target;
+    const double g0 = ON_DotProduct(r, su);
+    const double g1 = ON_DotProduct(r, sv);
+    if (std::fabs(g0) <= 1e-15 && std::fabs(g1) <= 1e-15)
+      break;
+
+    const double h00 = ON_DotProduct(su, su);
+    const double h01 = ON_DotProduct(su, sv);
+    const double h11 = ON_DotProduct(sv, sv);
+    const double det = h00 * h11 - h01 * h01;
+    if (!(det > 1e-24 * std::max(1.0, h00 * h11)))
+      break;
+
+    const double du = -(h11 * g0 - h01 * g1) / det;
+    const double dv = -(h00 * g1 - h01 * g0) / det;
+
+    const double cur_d = r.Length();
+    double alpha = 1.0;
+    bool improved = false;
+    for (int ls = 0; ls < 10; ++ls)
+    {
+      const double cu = ClampOrWrap(surface, 0, u + alpha * du);
+      const double cv = ClampOrWrap(surface, 1, v + alpha * dv);
+      ON_3dPoint cp;
+      if (surface.EvPoint(cu, cv, cp) && cp.DistanceTo(target) < cur_d)
+      {
+        u = cu;
+        v = cv;
+        improved = true;
+        break;
+      }
+      alpha *= 0.5;
+    }
+    if (!improved)
+      break;
+  }
+
+  // Polish across knot spans where the first derivative jumps.
+  ON_3dPoint best_p = ON_3dPoint::Origin;
+  surface.EvPoint(u, v, best_p);
+  double best_d = best_p.DistanceTo(target);
+  if (best_d > 1e-10)
+  {
+    double du_step = 1e-3 * surface.Domain(0).Length();
+    double dv_step = 1e-3 * surface.Domain(1).Length();
+    for (int r = 0; r < 10 && best_d > 1e-12; ++r)
+    {
+      for (int dir = 0; dir < 2; ++dir)
+      {
+        for (int sign : { -1, 1 })
+        {
+          const double cu = ClampOrWrap(surface, 0, u + (0 == dir ? sign * du_step : 0.0));
+          const double cv = ClampOrWrap(surface, 1, v + (1 == dir ? sign * dv_step : 0.0));
+          ON_3dPoint cp;
+          if (surface.EvPoint(cu, cv, cp))
+          {
+            const double cd = cp.DistanceTo(target);
+            if (cd < best_d)
+            {
+              best_d = cd;
+              u = cu;
+              v = cv;
+              best_p = cp;
+            }
+          }
+        }
+      }
+      du_step *= 0.5;
+      dv_step *= 0.5;
+    }
+  }
+
+  u_out = u;
+  v_out = v;
+  if (nullptr != closest_pt)
+    *closest_pt = best_p;
+  return true;
+}
+
+/**
+ * Second-order corrector for tangential contact (where N_a x N_b == 0 makes the 3x4
+ * Jacobian rank-deficient along the shared normal).
+ *
+ * Minimises g(u_a, v_a) = dist(S_a(u_a, v_a), S_b) using coordinate search + parabolic /
+ * golden-section line search in the parameter plane of A while keeping (u_b, v_b)
+ * orthogonally projected via `ProjectPointToSurfaceLocal`.
+ */
+bool CorrectSSXTangentNode(const ON_Surface& surface_a, const ON_Surface& surface_b,
+                           SSXNode& node, double tol)
+{
+  const double target = std::max(tol, 1e-12);
+  const ON_Interval da0 = surface_a.Domain(0);
+  const ON_Interval da1 = surface_a.Domain(1);
+
+  auto eval_gap = [&](double ua, double va, double& ub_io, double& vb_io, ON_3dPoint& mid_out) {
+    ua = ClampOrWrap(surface_a, 0, ua);
+    va = ClampOrWrap(surface_a, 1, va);
+    ON_3dPoint pa = ON_3dPoint::Origin;
+    if (!surface_a.EvPoint(ua, va, pa))
+      return ON_DBL_MAX;
+    ON_3dPoint pb = ON_3dPoint::Origin;
+    ProjectPointToSurfaceLocal(surface_b, pa, ub_io, vb_io, ub_io, vb_io, &pb);
+    mid_out = 0.5 * (pa + pb);
+    return pa.DistanceTo(pb);
+  };
+
+  double ub = node.ub;
+  double vb = node.vb;
+  ON_3dPoint mid = node.point;
+  double best_gap = eval_gap(node.ua, node.va, ub, vb, mid);
+  if (best_gap <= target)
+  {
+    node.ub = ub;
+    node.vb = vb;
+    node.point = mid;
+    return true;
+  }
+
+  double step_u = 0.04 * da0.Length();
+  double step_v = 0.04 * da1.Length();
+  const double phi = 0.6180339887498949;
+
+  for (int round = 0; round < 18 && best_gap > target; ++round)
+  {
+    // 1D golden-section minimization along u_a, then along v_a.
+    for (int dir = 0; dir < 2; ++dir)
+    {
+      const double center = (0 == dir) ? node.ua : node.va;
+      const double half = (0 == dir) ? step_u : step_v;
+      double lo = center - half;
+      double hi = center + half;
+      double c = hi - phi * (hi - lo);
+      double d = lo + phi * (hi - lo);
+
+      auto f_1d = [&](double t) {
+        double u_try = (0 == dir) ? t : node.ua;
+        double v_try = (0 == dir) ? node.va : t;
+        double ub_tmp = ub, vb_tmp = vb;
+        ON_3dPoint m_tmp;
+        return eval_gap(u_try, v_try, ub_tmp, vb_tmp, m_tmp);
+      };
+
+      double fc = f_1d(c);
+      double fd = f_1d(d);
+      for (int k = 0; k < 16; ++k)
+      {
+        if (fc < fd)
+        {
+          hi = d; d = c; fd = fc;
+          c = hi - phi * (hi - lo);
+          fc = f_1d(c);
+        }
+        else
+        {
+          lo = c; c = d; fc = fd;
+          d = lo + phi * (hi - lo);
+          fd = f_1d(d);
+        }
+      }
+      const double best_t = (fc < fd) ? c : d;
+      const double cand_u = ClampOrWrap(surface_a, 0, (0 == dir) ? best_t : node.ua);
+      const double cand_v = ClampOrWrap(surface_a, 1, (0 == dir) ? node.va : best_t);
+      double ub_cand = ub, vb_cand = vb;
+      ON_3dPoint mid_cand;
+      const double g_cand = eval_gap(cand_u, cand_v, ub_cand, vb_cand, mid_cand);
+      if (g_cand < best_gap)
+      {
+        best_gap = g_cand;
+        node.ua = cand_u;
+        node.va = cand_v;
+        ub = ub_cand;
+        vb = vb_cand;
+        mid = mid_cand;
+      }
+    }
+    step_u *= 0.5;
+    step_v *= 0.5;
+  }
+
+  node.ub = ub;
+  node.vb = vb;
+  node.point = mid;
+  return best_gap <= std::max(target, 1e-7);
+}
+
+/**
+ * 3D intersection direction of two surfaces at a point (unit); returns false when the
+ * surfaces are tangential (`|N_a x N_b| / (|N_a||N_b|) <= 1e-4`).
+ */
 bool SSXTangent(const ON_Surface& surface_a, const ON_Surface& surface_b, const SSXNode& node,
                 ON_3dVector& tangent)
 {
@@ -1787,14 +1994,68 @@ bool SSXTangent(const ON_Surface& surface_a, const ON_Surface& surface_b, const 
   if (!EvalSurfaceFrame(surface_b, node.ub, node.vb, p, bu, bv))
     return false;
 
-  const ON_3dVector na = ON_CrossProduct(au, av);
-  const ON_3dVector nb = ON_CrossProduct(bu, bv);
+  ON_3dVector na = ON_CrossProduct(au, av);
+  ON_3dVector nb = ON_CrossProduct(bu, bv);
+  if (!na.Unitize() || !nb.Unitize())
+    return false;
+
   tangent = ON_CrossProduct(na, nb);
   const double len = tangent.Length();
-  if (!(len > 1e-12))
+  if (!(len > 1e-4))
     return false;
   tangent = tangent / len;
   return true;
+}
+
+/**
+ * Discover a 1D tangential contact direction (e.g. a cylinder resting on a plane along
+ * a ruling line) when `SSXTangent` reports parallel normals.  Samples directions in the
+ * shared tangent plane and returns the unit direction along which the gap stays zero.
+ */
+bool DiscoverTangentialCurveDirection(const ON_Surface& surface_a, const ON_Surface& surface_b,
+                                      const SSXNode& seed, double probe_step, double tol,
+                                      ON_3dVector& tangent_out)
+{
+  ON_3dPoint p;
+  ON_3dVector au, av;
+  if (!EvalSurfaceFrame(surface_a, seed.ua, seed.va, p, au, av))
+    return false;
+  ON_3dVector e1 = au;
+  if (!e1.Unitize())
+    return false;
+  ON_3dVector n = ON_CrossProduct(au, av);
+  if (!n.Unitize())
+    return false;
+  ON_3dVector e2 = ON_CrossProduct(n, e1);
+  if (!e2.Unitize())
+    return false;
+
+  double best_gap = ON_DBL_MAX;
+  ON_3dVector best_dir = ON_3dVector::ZeroVector;
+  const int kAngles = 36;
+  for (int i = 0; i < kAngles; ++i)
+  {
+    const double theta = (ON_PI * static_cast<double>(i)) / static_cast<double>(kAngles);
+    const ON_3dVector dir = std::cos(theta) * e1 + std::sin(theta) * e2;
+    const ON_3dPoint target = seed.point + probe_step * dir;
+    double ua = seed.ua, va = seed.va, ub = seed.ub, vb = seed.vb;
+    ON_3dPoint pa, pb;
+    ProjectPointToSurfaceLocal(surface_a, target, ua, va, ua, va, &pa);
+    ProjectPointToSurfaceLocal(surface_b, pa, ub, vb, ub, vb, &pb);
+    const double gap = pa.DistanceTo(pb);
+    if (gap < best_gap && pa.DistanceTo(seed.point) >= 0.25 * probe_step)
+    {
+      best_gap = gap;
+      best_dir = dir;
+    }
+  }
+
+  if (best_gap <= std::max(tol * 25.0, 1e-5) && !best_dir.IsZero())
+  {
+    tangent_out = best_dir;
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -2178,6 +2439,147 @@ ON_NurbsCurve* FitTraceToNurbs(const std::vector<ON_3dPoint>& points)
   return result;
 }
 
+/**
+ * Interpolate a closed ring of `n` points (`points[0]` .. `points[n-1]`, without
+ * duplicating `points[0]` at the end) as a true C^2 periodic cubic `ON_NurbsCurve`
+ * (`IsPeriodic() == true`, `IsClosed() == true`).
+ *
+ * At the uniform knot sites of `CreatePeriodicUniformNurbs(3, 4, n, ...)`, the cubic
+ * B-spline basis values are `(1/6, 4/6, 1/6)` on adjacent control points `(i-1, i, i+1) mod n`,
+ * so solving that circulant system produces control points whose limit curve passes
+ * through every sample and joins with C^2 continuity across the seam.
+ */
+ON_NurbsCurve* FitPeriodicTraceToNurbs(const std::vector<ON_3dPoint>& raw_ring_points)
+{
+  const int n = static_cast<int>(raw_ring_points.size());
+  if (n < 4)
+    return FitTraceToNurbs(raw_ring_points);
+
+  // The closing step of a marched loop has whatever residual length remained when the
+  // trace re-entered the start threshold, whereas a uniform periodic B-spline places its
+  // knots at equal parameter intervals.  Build a clamped chord-length cubic through the
+  // closed loop (with `points[0]` appended) and sample it at `n` equal parameter steps so
+  // the periodic knots sit at uniform arc-length stations.
+  std::vector<ON_3dPoint> closed_chain = raw_ring_points;
+  if (closed_chain.back().DistanceTo(closed_chain.front()) > 1e-12)
+    closed_chain.push_back(closed_chain.front());
+
+  std::vector<ON_3dPoint> ring_points = raw_ring_points;
+  double perimeter = 0.0;
+  for (int i = 0; i < n; ++i)
+    perimeter += raw_ring_points[static_cast<size_t>(i)].DistanceTo(
+      raw_ring_points[static_cast<size_t>((i + 1) % n)]);
+  if (!(perimeter > 1e-12))
+    return nullptr;
+
+  if (ON_NurbsCurve* clamped = FitTraceToNurbs(closed_chain))
+  {
+    const ON_Interval dom = clamped->Domain();
+    for (int i = 0; i < n; ++i)
+    {
+      const double t = dom.ParameterAt(static_cast<double>(i) / static_cast<double>(n));
+      ring_points[static_cast<size_t>(i)] = clamped->PointAt(t);
+    }
+    delete clamped;
+  }
+
+  std::vector<double> matrix(static_cast<size_t>(n) * n, 0.0);
+  std::vector<double> rhs_x(static_cast<size_t>(n), 0.0);
+  std::vector<double> rhs_y(static_cast<size_t>(n), 0.0);
+  std::vector<double> rhs_z(static_cast<size_t>(n), 0.0);
+
+  for (int i = 0; i < n; ++i)
+  {
+    const int prev = (i + n - 1) % n;
+    const int next = (i + 1) % n;
+    matrix[static_cast<size_t>(i) * n + prev] = 1.0 / 6.0;
+    matrix[static_cast<size_t>(i) * n + i]    = 4.0 / 6.0;
+    matrix[static_cast<size_t>(i) * n + next] = 1.0 / 6.0;
+    rhs_x[static_cast<size_t>(i)] = ring_points[static_cast<size_t>(i)].x;
+    rhs_y[static_cast<size_t>(i)] = ring_points[static_cast<size_t>(i)].y;
+    rhs_z[static_cast<size_t>(i)] = ring_points[static_cast<size_t>(i)].z;
+  }
+
+  std::vector<double> ax = matrix, ay = matrix, az = matrix;
+  if (!SolveDense(ax, rhs_x, n) || !SolveDense(ay, rhs_y, n) || !SolveDense(az, rhs_z, n))
+    return FitTraceToNurbs(ring_points);
+
+  // `CreatePeriodicUniformNurbs` evaluates `t = Domain().Min()` at `(CV[0] + 4*CV[1] + CV[2])/6`,
+  // i.e. centred on `CV[1]`.  Rotate the solved CVs by -1 so `Domain().Min()` sits at `ring_points[0]`.
+  std::vector<ON_3dPoint> cvs(static_cast<size_t>(n));
+  for (int i = 0; i < n; ++i)
+  {
+    const int src = (i + n - 1) % n;
+    cvs[static_cast<size_t>(i)] = ON_3dPoint(rhs_x[static_cast<size_t>(src)],
+                                             rhs_y[static_cast<size_t>(src)],
+                                             rhs_z[static_cast<size_t>(src)]);
+  }
+
+  ON_NurbsCurve* curve = ON_NurbsCurve::New();
+  if (!curve->CreatePeriodicUniformNurbs(3, 4, n, cvs.data(), 1.0) || !curve->IsValid())
+  {
+    delete curve;
+    return FitTraceToNurbs(ring_points);
+  }
+  curve->SetDomain(0.0, perimeter);
+  return curve;
+}
+
+/**
+ * March along a 1D tangential contact locus (where both surfaces share a tangent plane).
+ */
+std::vector<SSXNode> MarchSSXTangent(const ON_Surface& surface_a, const ON_Surface& surface_b,
+                                     const SSXNode& start, const ON_3dVector& direction,
+                                     double step, double tol)
+{
+  std::vector<SSXNode> trace;
+  trace.push_back(start);
+  SSXNode current = start;
+  ON_3dVector last_dir = direction;
+
+  auto outside = [](const ON_Surface& s, int dir, double t) {
+    const ON_Interval dom = s.Domain(dir);
+    if (s.IsClosed(dir))
+      return false;
+    return t < dom.Min() || t > dom.Max();
+  };
+
+  for (int i = 0; i < 1000; ++i)
+  {
+    double dua = 0.0, dva = 0.0, dub = 0.0, dvb = 0.0;
+    if (!ParamStepForDelta(surface_a, current.ua, current.va, step * last_dir, dua, dva))
+      break;
+    if (!ParamStepForDelta(surface_b, current.ub, current.vb, step * last_dir, dub, dvb))
+      break;
+
+    const double next_ua = current.ua + dua;
+    const double next_va = current.va + dva;
+    const double next_ub = current.ub + dub;
+    const double next_vb = current.vb + dvb;
+    if (outside(surface_a, 0, next_ua) || outside(surface_a, 1, next_va) ||
+        outside(surface_b, 0, next_ub) || outside(surface_b, 1, next_vb))
+      break;
+
+    SSXNode next;
+    next.ua = ClampOrWrap(surface_a, 0, next_ua);
+    next.va = ClampOrWrap(surface_a, 1, next_va);
+    next.ub = ClampOrWrap(surface_b, 0, next_ub);
+    next.vb = ClampOrWrap(surface_b, 1, next_vb);
+
+    if (!CorrectSSXTangentNode(surface_a, surface_b, next, tol))
+      break;
+
+    const double adv = next.point.DistanceTo(current.point);
+    if (adv <= 0.1 * step)
+      break;
+
+    last_dir = (next.point - current.point) / adv;
+    trace.push_back(next);
+    current = next;
+  }
+  return trace;
+}
+
 } // anonymous namespace
 
 TL_FUNCTION void TL_FreeSSXBranches(std::vector<TL_SurfaceSurfaceIntersectionBranch>& branches)
@@ -2209,7 +2611,10 @@ TL_FUNCTION int TL_SurfaceSurfaceIntersect(
   if (box_a.MinimumDistanceTo(box_b) > std::max(tol, 1e-9))
     return 0;
 
-  const double diag = std::max(box_a.Diagonal().Length(), box_b.Diagonal().Length());
+  // An intersection curve is bounded by the *smaller* surface (its bbox intersection),
+  // not the larger one: sizing `step` from `max(diag_a, diag_b)` made a huge reference
+  // plane inflate the marching step 3x on a small tube.
+  const double diag = std::min(box_a.Diagonal().Length(), box_b.Diagonal().Length());
   const double seed_step = std::max(tol * 10.0, 1e-9);
 
   // ---- seed discovery: sample both parameter grids and correct close pairs -----
@@ -2268,7 +2673,12 @@ TL_FUNCTION int TL_SurfaceSurfaceIntersect(
     node.ub = ub;
     node.vb = vb;
     if (!CorrectSSXNode(surface_a, surface_b, node, tol))
-      return;
+    {
+      // Transverse corrector stalled: try the second-order tangential corrector so
+      // grazing contacts (cylinder tangent to plane, kissing spheres) still seed.
+      if (!CorrectSSXTangentNode(surface_a, surface_b, node, tol))
+        return;
+    }
     for (const SSXNode& kept : seeds)
     {
       if (kept.point.DistanceTo(node.point) <= seed_step)
@@ -2338,34 +2748,50 @@ TL_FUNCTION int TL_SurfaceSurfaceIntersect(
       continue;
 
     ON_3dVector tangent;
-    if (!SSXTangent(surface_a, surface_b, seeds[s], tangent))
-    {
-      consumed[s] = 1;
-      continue;   // tangential contact: no branch to march along
-    }
-
+    bool is_tangent_branch = false;
     bool closed_forward = false;
-    std::vector<SSXNode> forward = MarchSSX(surface_a, surface_b, seeds[s], tangent, step, tol,
-                                            true, closed_forward);
-
     std::vector<SSXNode> trace;
-    if (closed_forward)
+
+    if (SSXTangent(surface_a, surface_b, seeds[s], tangent))
     {
-      trace = forward;
+      std::vector<SSXNode> forward = MarchSSX(surface_a, surface_b, seeds[s], tangent, step, tol,
+                                              true, closed_forward);
+      if (closed_forward)
+      {
+        trace = forward;
+      }
+      else
+      {
+        bool closed_backward = false;
+        std::vector<SSXNode> backward = MarchSSX(surface_a, surface_b, seeds[s], -tangent, step, tol,
+                                                 false, closed_backward);
+        trace.reserve(backward.size() + forward.size());
+        for (size_t i = backward.size(); i-- > 1;)
+          trace.push_back(backward[i]);
+        trace.insert(trace.end(), forward.begin(), forward.end());
+      }
     }
     else
     {
-      bool closed_backward = false;
-      std::vector<SSXNode> backward = MarchSSX(surface_a, surface_b, seeds[s], -tangent, step, tol,
-                                               false, closed_backward);
-      // backward[0] == seed, so reverse the remainder and append the forward run.
-      trace.reserve(backward.size() + forward.size());
-      for (size_t i = backward.size(); i-- > 1;)
-        trace.push_back(backward[i]);
-      trace.insert(trace.end(), forward.begin(), forward.end());
+      // Tangential contact: either a 1D grazing curve (cylinder tangent to plane) or an
+      // isolated kissing point (sphere tangent to plane).
+      is_tangent_branch = true;
+      if (DiscoverTangentialCurveDirection(surface_a, surface_b, seeds[s], step, tol, tangent))
+      {
+        std::vector<SSXNode> forward = MarchSSXTangent(surface_a, surface_b, seeds[s], tangent, step, tol);
+        std::vector<SSXNode> backward = MarchSSXTangent(surface_a, surface_b, seeds[s], -tangent, step, tol);
+        trace.reserve(backward.size() + forward.size());
+        for (size_t i = backward.size(); i-- > 1;)
+          trace.push_back(backward[i]);
+        trace.insert(trace.end(), forward.begin(), forward.end());
+      }
+      else
+      {
+        trace.push_back(seeds[s]);
+      }
     }
 
-    if (trace.size() < 2)
+    if (trace.empty() || (!is_tangent_branch && trace.size() < 2))
     {
       consumed[s] = 1;
       continue;
@@ -2375,6 +2801,7 @@ TL_FUNCTION int TL_SurfaceSurfaceIntersect(
 
     TL_SurfaceSurfaceIntersectionBranch branch;
     branch.is_closed = closed_forward;
+    branch.is_tangent = is_tangent_branch;
     branch.points_3d.Reserve(static_cast<int>(trace.size()));
     branch.params_a.Reserve(static_cast<int>(trace.size()));
     branch.params_b.Reserve(static_cast<int>(trace.size()));
@@ -2388,25 +2815,38 @@ TL_FUNCTION int TL_SurfaceSurfaceIntersect(
     std::vector<ON_3dPoint> fit_points(trace.size());
     for (size_t i = 0; i < trace.size(); ++i)
       fit_points[i] = trace[i].point;
-    // No end-point duplication: the two ends of a closed trace already coincide, and a
-    // zero-length chord would produce a repeated parameter and a singular system.
 
-    branch.curve_3d = FitTraceToNurbs(fit_points);
+    if (branch.is_closed && fit_points.size() >= 4)
+      branch.curve_3d = FitPeriodicTraceToNurbs(fit_points);
+    else if (fit_points.size() >= 2)
+      branch.curve_3d = FitTraceToNurbs(fit_points);
 
-    // Measure the achieved accuracy against both surfaces.
+    // Measure the achieved accuracy against both surfaces using local 2D Newton
+    // projection seeded from the branch's own (u,v) trace, avoiding coarse-grid basin hops.
     double max_error = 0.0;
-    if (nullptr != branch.curve_3d)
+    if (nullptr != branch.curve_3d && !trace.empty())
     {
       const ON_Interval dom = branch.curve_3d->Domain();
-      for (int k = 0; k <= 24; ++k)
+      const int samples = 32;
+      for (int k = 0; k <= samples; ++k)
       {
-        const ON_3dPoint p = branch.curve_3d->PointAt(dom.ParameterAt(k / 24.0));
-        double ua = 0.0, va = 0.0, ub = 0.0, vb = 0.0;
-        if (TL_GetSurfaceClosestPoint(surface_a, p, &ua, &va))
-          max_error = std::max(max_error, p.DistanceTo(surface_a.PointAt(ua, va)));
-        if (TL_GetSurfaceClosestPoint(surface_b, p, &ub, &vb))
-          max_error = std::max(max_error, p.DistanceTo(surface_b.PointAt(ub, vb)));
+        const double frac = static_cast<double>(k) / static_cast<double>(samples);
+        const ON_3dPoint p = branch.curve_3d->PointAt(dom.ParameterAt(frac));
+        const size_t idx = std::min(trace.size() - 1,
+                                    static_cast<size_t>(std::llround(frac * (trace.size() - 1))));
+        double ua = trace[idx].ua, va = trace[idx].va;
+        double ub = trace[idx].ub, vb = trace[idx].vb;
+        ON_3dPoint pa, pb;
+        if (ProjectPointToSurfaceLocal(surface_a, p, ua, va, ua, va, &pa))
+          max_error = std::max(max_error, p.DistanceTo(pa));
+        if (ProjectPointToSurfaceLocal(surface_b, p, ub, vb, ub, vb, &pb))
+          max_error = std::max(max_error, p.DistanceTo(pb));
       }
+    }
+    else if (trace.size() == 1)
+    {
+      max_error = surface_a.PointAt(trace[0].ua, trace[0].va)
+                    .DistanceTo(surface_b.PointAt(trace[0].ub, trace[0].vb));
     }
     branch.max_error = max_error;
 

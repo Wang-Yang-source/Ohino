@@ -59,6 +59,8 @@ struct TL_VulkanRenderOptions
   bool cull_backfaces = true;      ///< CULL_MODE_BACK for closed meshes (see TL_CapMeshOpenBoundaryLoops)
   bool enable_feature_edges = true;///< Draw mesh silhouette + hard crease edges over the shading
   double crease_angle_degrees = 30.0; ///< Dihedral angle above which an edge counts as a crease
+  float feature_line_width = 2.4f; ///< Screen-space width (px) for silhouette & crease lines
+  float curve_line_width = 2.0f;   ///< Screen-space width (px) for scene curves & SSX traces
 };
 
 struct TL_VulkanRenderResult

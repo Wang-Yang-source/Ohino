@@ -2275,8 +2275,15 @@ void TestIntersectionStage6()
     {
       const auto& branch = branches[0];
       CHECK(branch.is_closed);
+      CHECK(!branch.is_tangent);
       CHECK(branch.points_3d.Count() > 50);
       CHECK(nullptr != branch.curve_3d);
+      if (nullptr != branch.curve_3d)
+      {
+        CHECK_MSG(branch.curve_3d->IsPeriodic(),
+                  "a closed SSX branch must be fitted as a true periodic NURBS curve");
+        CHECK_MSG(branch.curve_3d->IsClosed(), "closed SSX branch curve must report IsClosed()");
+      }
       CHECK_MSG(branch.max_error <= 1e-6,
                 "sphere x plane max_error = " + std::to_string(branch.max_error));
       CHECK_EQ_INT(branch.params_a.Count(), branch.points_3d.Count());
@@ -2369,6 +2376,36 @@ void TestIntersectionStage6()
     std::vector<TL_SurfaceSurfaceIntersectionBranch> branches;
     CHECK_EQ_INT(TL_SurfaceSurfaceIntersect(sphere_nurbs, far_plane, 1e-8, branches), 0);
     CHECK(branches.empty());
+  }
+
+  // ---- SSX: tangential contact (cylinder resting on plane x = 3) -------
+  {
+    ON_Cylinder cyl(ON_Circle(ON_Plane(ON_3dPoint(0, 0, -6), ON_3dVector::ZAxis), 3.0), 12.0);
+    ON_NurbsSurface cyl_nurbs;
+    CHECK(cyl.GetNurbForm(cyl_nurbs));
+    ON_NurbsSurface tangent_plane = MakeTestPlanePatch(
+      ON_Plane(ON_3dPoint(3, 0, 0), ON_3dVector::XAxis), 8.0);
+
+    std::vector<TL_SurfaceSurfaceIntersectionBranch> branches;
+    const int count = TL_SurfaceSurfaceIntersect(cyl_nurbs, tangent_plane, 1e-6, branches);
+    CHECK_EQ_INT(count, 1);
+    if (count == 1)
+    {
+      const auto& branch = branches[0];
+      CHECK(branch.is_tangent);
+      CHECK(!branch.is_closed);
+      CHECK(branch.points_3d.Count() > 40);
+      CHECK(nullptr != branch.curve_3d);
+      CHECK_MSG(branch.max_error <= 1e-9,
+                "tangential ruling max_error = " + std::to_string(branch.max_error));
+      for (int i = 0; i < branch.points_3d.Count(); ++i)
+      {
+        const ON_3dPoint& p = branch.points_3d[i];
+        CHECK_NEAR(p.x, 3.0, 1e-5);
+        CHECK_NEAR(p.y, 0.0, 1e-4);
+      }
+    }
+    TL_FreeSSXBranches(branches);
   }
 
   // ---- feature edges: boundary / crease / silhouette --------------------

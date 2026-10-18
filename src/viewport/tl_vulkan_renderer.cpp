@@ -410,16 +410,24 @@ double DepthOf(const TL_Viewport& vp, const ON_3dPoint& world, const DepthWindow
 }
 
 /**
- * `bias_towards_eye` pulls the segment a hair closer than the shaded surfaces so a
- * wireframe drawn on top of a mesh wins the depth test.  Grid, axes and HUD pass
- * false: they must be occluded by solids like any other background geometry.
+ * `bias_towards_eye` pulls the segment closer than the shaded surfaces so a wireframe or
+ * silhouette drawn on top of a mesh wins the depth test.  Grid, axes and HUD pass false
+ * (`depth_bias = 0`): they must be occluded by solids like any other background geometry.
+ *
+ * Because MoltenVK (Metal) does not support Vulkan `wideLines`, widths > 1 px are
+ * synthesized in screen space by emitting sub-pixel parallel offset strokes (spaced 0.45 px
+ * apart along the 2D normal) that the 4x MSAA resolve blends into a smooth thick stroke.
  */
 void EmitWorldPolyline(const TL_Viewport& vp, const ViewportRect& rect, const DepthWindow& window,
                        const std::vector<ON_3dPoint>& world_points, const float* color,
-                       std::vector<LineVertex>& out, bool bias_towards_eye = false)
+                       std::vector<LineVertex>& out, bool bias_towards_eye = false,
+                       double depth_bias = 2e-4, double pixel_width = 1.0)
 {
   if (world_points.size() < 2)
     return;
+
+  const double eff_bias = bias_towards_eye ? std::max(0.0, depth_bias) : 0.0;
+  const double half_w = 0.5 * std::max(0.0, pixel_width - 1.0);
 
   bool have_prev = false;
   ON_2dPoint prev = ON_2dPoint::Origin;
@@ -441,14 +449,33 @@ void EmitWorldPolyline(const TL_Viewport& vp, const ViewportRect& rect, const De
       double tb = 0.0;
       if (ClipSegment(prev, screen, rect, ca, cb, ta, tb))
       {
-        double da = prev_depth + (depth - prev_depth) * ta;
-        double db = prev_depth + (depth - prev_depth) * tb;
-        if (bias_towards_eye)
-        {
-          da = std::max(0.0, da - 2e-4);
-          db = std::max(0.0, db - 2e-4);
-        }
+        const double da = std::max(0.0, prev_depth + (depth - prev_depth) * ta - eff_bias);
+        const double db = std::max(0.0, prev_depth + (depth - prev_depth) * tb - eff_bias);
         EmitSegment(out, ca, cb, da, db, color);
+
+        if (half_w > 0.05)
+        {
+          const double dx = cb.x - ca.x;
+          const double dy = cb.y - ca.y;
+          const double len = std::hypot(dx, dy);
+          if (len > 1e-6)
+          {
+            const double nx = -dy / len;
+            const double ny = dx / len;
+            const int pairs = std::clamp(static_cast<int>(std::ceil(half_w / 0.45)), 1, 6);
+            for (int k = 1; k <= pairs; ++k)
+            {
+              const double off = half_w * (static_cast<double>(k) / static_cast<double>(pairs));
+              const ON_2dVector delta(nx * off, ny * off);
+              ON_2dPoint c0, c1;
+              double t0 = 0.0, t1 = 0.0;
+              if (ClipSegment(ca + delta, cb + delta, rect, c0, c1, t0, t1))
+                EmitSegment(out, c0, c1, da, db, color);
+              if (ClipSegment(ca - delta, cb - delta, rect, c0, c1, t0, t1))
+                EmitSegment(out, c0, c1, da, db, color);
+            }
+          }
+        }
       }
     }
     prev = screen;
@@ -516,7 +543,20 @@ void EmitGrid(const TL_Viewport& vp, const ViewportRect& rect, const DepthWindow
               std::vector<LineVertex>& out)
 {
   const int half = GridHalfExtent(vp);
-  const ON_Plane cplane = GridPlaneForView(vp.m_standard_view);
+  ON_Plane cplane = GridPlaneForView(vp.m_standard_view);
+  ON_3dVector back_shift = ON_3dVector::ZeroVector;
+  // In orthographic CAD views (TOP / FRONT / RIGHT), the viewport grid is a backdrop:
+  // shifting the plane origin along `m_camera_dir` to the far end of the depth window
+  // leaves every 2D screen coordinate unchanged while placing the grid behind all 3D
+  // solids (otherwise the y=0 / x=0 grid slices through the middle of objects).
+  if (TL_PROJECTION_PARALLEL == vp.m_projection && window.span > 1e-9)
+  {
+    const double cur_d = ON_DotProduct(cplane.origin - vp.m_target, vp.m_camera_dir);
+    const double target_d = window.far_d - 1e-4 * window.span;
+    back_shift = vp.m_camera_dir * (target_d - cur_d);
+    cplane.origin += back_shift;
+    cplane.UpdateEquation();
+  }
 
   for (int i = -half; i <= half; ++i)
   {
@@ -535,11 +575,14 @@ void EmitGrid(const TL_Viewport& vp, const ViewportRect& rect, const DepthWindow
   }
 
   const double axis = static_cast<double>(half);
-  std::vector<ON_3dPoint> x_axis = { ON_3dPoint(-axis, 0.0, 0.0), ON_3dPoint(axis, 0.0, 0.0) };
+  std::vector<ON_3dPoint> x_axis = { ON_3dPoint(-axis, 0.0, 0.0) + back_shift,
+                                     ON_3dPoint(axis, 0.0, 0.0) + back_shift };
   EmitWorldPolyline(vp, rect, window, x_axis, kAxisX, out);
-  std::vector<ON_3dPoint> y_axis = { ON_3dPoint(0.0, -axis, 0.0), ON_3dPoint(0.0, axis, 0.0) };
+  std::vector<ON_3dPoint> y_axis = { ON_3dPoint(0.0, -axis, 0.0) + back_shift,
+                                     ON_3dPoint(0.0, axis, 0.0) + back_shift };
   EmitWorldPolyline(vp, rect, window, y_axis, kAxisY, out);
-  std::vector<ON_3dPoint> z_axis = { ON_3dPoint(0.0, 0.0, -axis), ON_3dPoint(0.0, 0.0, axis) };
+  std::vector<ON_3dPoint> z_axis = { ON_3dPoint(0.0, 0.0, -axis) + back_shift,
+                                     ON_3dPoint(0.0, 0.0, axis) + back_shift };
   EmitWorldPolyline(vp, rect, window, z_axis, kAxisZ, out);
 }
 
@@ -852,7 +895,8 @@ bool TL_VulkanFourViewRenderer::RenderScene(
         {
           const std::vector<ON_3dPoint> segment = { feature_lines[k].from, feature_lines[k].to };
           EmitWorldPolyline(vp, rect, window, segment, kFeatureEdge, lines,
-                            /*bias_towards_eye=*/true);
+                            /*bias_towards_eye=*/true, /*depth_bias=*/6e-3,
+                            static_cast<double>(options.feature_line_width));
         }
         out_result.feature_edge_count += feature_lines.Count();
       }
@@ -900,7 +944,8 @@ bool TL_VulkanFourViewRenderer::RenderScene(
       }
 
       const std::vector<ON_3dPoint> polyline = CurvePolyline(obj);
-      EmitWorldPolyline(vp, rect, window, polyline, color, lines, /*bias_towards_eye=*/true);
+      EmitWorldPolyline(vp, rect, window, polyline, color, lines, /*bias_towards_eye=*/true,
+                        /*depth_bias=*/9e-3, static_cast<double>(options.curve_line_width));
     }
 
     // Viewport panel background: a thin inset border pair in Surface2 + Lavender accent
