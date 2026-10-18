@@ -595,9 +595,153 @@ int RunFourViewDemo(const std::string& out_dir, int* exit_code) {
 // --render-vulkan : Vulkan four-view render to PNG
 // ---------------------------------------------------------------------------
 
-int RunVulkanRender(const std::string& out_dir, bool use_demo_scene, int* exit_code) {
+int RunVulkanRender(const std::string& out_dir, bool use_demo_scene,
+                    const std::string& input_3dm_path, int* exit_code) {
   opentl::mvp::SceneDocument document;
-  if (use_demo_scene) {
+  std::vector<ON_Mesh*> owned_meshes;
+  std::vector<const ON_Mesh*> meshes;
+  std::vector<const float*> custom_mesh_colors;
+  ON_NurbsSurface* swept = nullptr;
+  std::vector<TL_SurfaceSurfaceIntersectionBranch> ssx_branches;
+  bool is_external_3dm = !input_3dm_path.empty();
+
+  // Catppuccin Mocha accent wheel for multi-layer .3dm models
+  // Layer 0: Chassis (Lavender #b4befe), Layer 2: Display panel (Mauve #cba6f7),
+  // Layer 7: Keycaps (Surface1 #45475a dark graphite so bright legends pop),
+  // Layer 8: 3D Keycap legends (Yellow #f9e2af), Layer 12: Feet/ports (Peach #fab387).
+  static const float kPaletteWheel[][4] = {
+    { 0.706f, 0.745f, 0.996f, 1.0f }, // 0: Lavender (#b4befe) - chassis / body
+    { 0.953f, 0.545f, 0.659f, 1.0f }, // 1: Red      (#f38ba8) - webcam / accents
+    { 0.796f, 0.651f, 0.969f, 1.0f }, // 2: Mauve    (#cba6f7) - display / trackpad
+    { 0.537f, 0.706f, 0.980f, 1.0f }, // 3: Blue     (#89b4fa)
+    { 0.651f, 0.890f, 0.631f, 1.0f }, // 4: Green    (#a6e3a1)
+    { 0.961f, 0.761f, 0.906f, 1.0f }, // 5: Pink     (#f5c2e7)
+    { 0.580f, 0.886f, 0.835f, 1.0f }, // 6: Teal     (#94e2d5)
+    { 0.271f, 0.278f, 0.353f, 1.0f }, // 7: Surface1 (#45475a) - dark graphite keycaps
+    { 0.976f, 0.886f, 0.686f, 1.0f }, // 8: Yellow   (#f9e2af) - 3D keycap legends
+    { 0.651f, 0.890f, 0.631f, 1.0f }, // 9: Green    (#a6e3a1)
+    { 0.580f, 0.886f, 0.835f, 1.0f }, // 10: Teal    (#94e2d5)
+    { 0.922f, 0.627f, 0.675f, 1.0f }, // 11: Maroon  (#eba0ac)
+    { 0.980f, 0.702f, 0.529f, 1.0f }, // 12: Peach   (#fab387) - feet / ports
+    { 0.804f, 0.839f, 0.957f, 1.0f }  // 13: Text    (#cdd6f4)
+  };
+  constexpr int kPaletteCount = static_cast<int>(sizeof(kPaletteWheel) / sizeof(kPaletteWheel[0]));
+
+  if (is_external_3dm) {
+    std::string load_err;
+    if (!document.Load3dm(input_3dm_path, &load_err)) {
+      std::printf("vulkan.3dm_error=%s\n", load_err.c_str());
+      if (nullptr != exit_code) *exit_code = 1;
+      return 1;
+    }
+
+    ONX_Model model;
+    ON_TextLog log;
+    if (!model.Read(input_3dm_path.c_str(), &log)) {
+      std::printf("vulkan.3dm_error=ONX_Model::Read failed\n");
+      if (nullptr != exit_code) *exit_code = 1;
+      return 1;
+    }
+
+    std::vector<ON_Mesh*> layer_meshes(64, nullptr);
+    int brep_count = 0, solid_brep_count = 0, extrusion_count = 0;
+    int total_brep_faces = 0, classified_faces = 0;
+    double total_solid_volume = 0.0;
+
+    ONX_ModelComponentIterator it(model, ON_ModelComponent::Type::ModelGeometry);
+    for (const ON_ModelComponent* mc = it.FirstComponent(); nullptr != mc; mc = it.NextComponent()) {
+      const ON_ModelGeometryComponent* mg = ON_ModelGeometryComponent::Cast(mc);
+      if (nullptr == mg) continue;
+      const ON_Geometry* geom = mg->Geometry(nullptr);
+      const ON_3dmObjectAttributes* attr = mg->Attributes(nullptr);
+      if (nullptr == geom) continue;
+
+      const int li = std::clamp(attr ? attr->m_layer_index : 0, 0, 63);
+      auto ensure_layer_mesh = [&](int layer_idx) -> ON_Mesh* {
+        if (nullptr == layer_meshes[static_cast<size_t>(layer_idx)])
+          layer_meshes[static_cast<size_t>(layer_idx)] = new ON_Mesh();
+        return layer_meshes[static_cast<size_t>(layer_idx)];
+      };
+
+      if (const ON_Brep* brep = ON_Brep::Cast(geom)) {
+        ++brep_count;
+        total_brep_faces += brep->m_F.Count();
+        ON_Mesh single_brep_mesh;
+        TL_ExtractBrepMesh(*brep, single_brep_mesh, false);
+        if (brep->IsSolid()) {
+          ++solid_brep_count;
+          total_solid_volume += std::fabs(TL_MeshSignedVolume(single_brep_mesh));
+        }
+        if (brep->m_F.Count() > 0) {
+          const ON_Interval u_dom = brep->m_F[0].Domain(0);
+          const ON_Interval v_dom = brep->m_F[0].Domain(1);
+          const TL_PointFaceRelation rel = TL_ClassifyPointOnBrepFace(
+            *brep, 0, ON_2dPoint(u_dom.Mid(), v_dom.Mid()), 1e-6, 1e-6);
+          if (rel != TL_PointFaceRelation::Outside || brep->m_F[0].LoopCount() > 0)
+            ++classified_faces;
+        }
+        TL_ExtractBrepMesh(*brep, *ensure_layer_mesh(li), true);
+      } else if (const ON_Extrusion* ext = ON_Extrusion::Cast(geom)) {
+        ++extrusion_count;
+        if (ON_Brep* bf = ext->BrepForm()) {
+          ON_Mesh single_ext_mesh;
+          TL_ExtractBrepMesh(*bf, single_ext_mesh, false);
+          if (ext->IsSolid())
+            total_solid_volume += std::fabs(TL_MeshSignedVolume(single_ext_mesh));
+          TL_ExtractBrepMesh(*bf, *ensure_layer_mesh(li), true);
+          delete bf;
+        }
+      } else if (const ON_Mesh* m = ON_Mesh::Cast(geom)) {
+        ON_Mesh* dst = ensure_layer_mesh(li);
+        const int v_base = dst->VertexCount();
+        for (int vi = 0; vi < m->VertexCount(); ++vi)
+          dst->m_V.Append(m->m_V[vi]);
+        for (int fi = 0; fi < m->m_F.Count(); ++fi) {
+          ON_MeshFace mf = m->m_F[fi];
+          for (int k = 0; k < 4; ++k) mf.vi[k] += v_base;
+          dst->m_F.Append(mf);
+        }
+      } else if (const ON_SubD* sd = ON_SubD::Cast(geom)) {
+        if (ON_Mesh* sm = TL_MeshFromSubD(*sd, 0, nullptr)) {
+          ON_Mesh* dst = ensure_layer_mesh(li);
+          const int v_base = dst->VertexCount();
+          for (int vi = 0; vi < sm->VertexCount(); ++vi)
+            dst->m_V.Append(sm->m_V[vi]);
+          for (int fi = 0; fi < sm->m_F.Count(); ++fi) {
+            ON_MeshFace mf = sm->m_F[fi];
+            for (int k = 0; k < 4; ++k) mf.vi[k] += v_base;
+            dst->m_F.Append(mf);
+          }
+          delete sm;
+        }
+      }
+    }
+
+    for (size_t li = 0; li < layer_meshes.size(); ++li) {
+      ON_Mesh* lm = layer_meshes[li];
+      if (nullptr == lm) continue;
+      if (lm->m_F.Count() <= 0 || lm->VertexCount() <= 0) {
+        delete lm;
+        continue;
+      }
+      lm->ComputeFaceNormals();
+      if (lm->m_N.Count() != lm->VertexCount())
+        lm->ComputeVertexNormals();
+      owned_meshes.push_back(lm);
+      meshes.push_back(lm);
+      custom_mesh_colors.push_back(kPaletteWheel[li % kPaletteCount]);
+    }
+
+    std::printf("vulkan.3dm_file=%s layers=%zu curves=%zu breps=%d solid_breps=%d extrusions=%d\n",
+                input_3dm_path.c_str(), document.Layers().size(), document.ObjectCount(),
+                brep_count, solid_brep_count, extrusion_count);
+    std::printf("vulkan.3dm_brep_faces=%d classified_breps=%d solid_volume=%.2f\n",
+                total_brep_faces, classified_faces, total_solid_volume);
+    // When solid Breps/Extrusions are present, clear 2D construction sketch curves so stray
+    // construction outlines do not bleed over the shaded 3D assembly.
+    if (!owned_meshes.empty())
+      document.Clear();
+  } else if (use_demo_scene) {
     DemoScene scene;
     BuildDemoScene(scene);
     document = scene.document;
@@ -609,9 +753,7 @@ int RunVulkanRender(const std::string& out_dir, bool use_demo_scene, int* exit_c
 
   // A shaded surface so the renderer exercises its triangle pipeline: sweep a circle
   // along a quarter arc, then tessellate it into an ON_Mesh grid.
-  std::vector<ON_Mesh*> owned_meshes;
-  ON_NurbsSurface* swept = nullptr;
-  {
+  if (!is_external_3dm) {
     ON_ArcCurve rail(ON_Arc(ON_Plane(ON_3dPoint(-6.0, -6.0, 1.65), ON_3dVector::ZAxis), 9.0, ON_PI));
     ON_ArcCurve profile(ON_Circle(ON_Plane::World_xy, 1.6));
     swept = TL_Sweep1Rail(rail, profile, 24, nullptr);
@@ -633,8 +775,7 @@ int RunVulkanRender(const std::string& out_dir, bool use_demo_scene, int* exit_c
 
   // Real surface x surface intersection, computed at render time and added to the scene
   // as yellow polylines: the curve the kernel actually solved, not a decorative circle.
-  std::vector<TL_SurfaceSurfaceIntersectionBranch> ssx_branches;
-  if (nullptr != swept && swept->IsValid()) {
+  if (!is_external_3dm && nullptr != swept && swept->IsValid()) {
     ON_NurbsSurface plane_patch(3, false, 2, 2, 2, 2);
     ON_3dVector slice_normal(0.0, -0.18, 1.0);
     slice_normal.Unitize();
@@ -672,19 +813,65 @@ int RunVulkanRender(const std::string& out_dir, bool use_demo_scene, int* exit_c
     }
   }
 
-  std::vector<const ON_Mesh*> meshes;
-  for (const ON_Mesh* mesh : owned_meshes)
-    meshes.push_back(mesh);
+  if (!is_external_3dm) {
+    for (const ON_Mesh* mesh : owned_meshes)
+      meshes.push_back(mesh);
+
+    // Second shaded solid: a Catmull-Clark SubD organic block sliced and capped by an oblique
+    // boolean plane, rendered in Catppuccin Teal (#94e2d5) with its yellow section loop.
+    {
+      ON_BoundingBox subd_box(ON_3dPoint(2.5, 2.0, 0.2), ON_3dPoint(8.5, 8.0, 4.8));
+      ON_SubD* subd = TL_CreateSubDBox(subd_box, 3, nullptr);
+      ON_Mesh* subd_mesh = (nullptr != subd) ? TL_MeshFromSubD(*subd, 0, nullptr) : nullptr;
+      delete subd;
+      if (nullptr != subd_mesh) {
+        ON_3dVector cut_n(-0.55, -0.45, 0.70);
+        cut_n.Unitize();
+        const ON_Plane cut_plane(ON_3dPoint(5.2, 4.8, 3.0), cut_n);
+        ON_Mesh* sliced_neg = new ON_Mesh();
+        ON_Mesh sliced_pos;
+        std::vector<std::vector<ON_3dPoint>> section_loops;
+        const double v_whole = TL_MeshSignedVolume(*subd_mesh);
+        const int loops = TL_SliceMeshWithPlane(*subd_mesh, cut_plane, true, &sliced_pos,
+                                                sliced_neg, &section_loops);
+        const double v_sum = TL_MeshSignedVolume(sliced_pos) + TL_MeshSignedVolume(*sliced_neg);
+        std::printf("vulkan.subd_slice_loops=%d volume_whole=%.4f volume_sum=%.4f diff=%.2e\n",
+                    loops, v_whole, v_sum, std::fabs(v_sum - v_whole));
+        delete subd_mesh;
+        if (sliced_neg->m_F.Count() > 0) {
+          owned_meshes.push_back(sliced_neg);
+          meshes.push_back(sliced_neg);
+          if (document.FindLayerByName("Intersection") < 0)
+            document.AddLayer("Intersection", 249, 226, 175, true);
+          for (const auto& loop : section_loops) {
+            if (loop.size() >= 3) {
+              std::vector<ON_3dPoint> closed_loop = loop;
+              closed_loop.push_back(loop.front());
+              document.AddPolyline(closed_loop, "subd_section", "Intersection");
+            }
+          }
+        } else {
+          delete sliced_neg;
+        }
+      }
+    }
+  }
 
   TL_FourViewLayout layout = TL_FourViewLayout::Default(1600, 900);
-  ON_BoundingBox bbox = document.GetSceneBoundingBox();
+  ON_BoundingBox bbox;
   for (const ON_Mesh* mesh : owned_meshes) {
     ON_BoundingBox mesh_box;
     if (mesh->GetBoundingBox(mesh_box) && mesh_box.IsValid())
       bbox.Union(mesh_box);
   }
-  if (bbox.IsValid())
-    layout.ZoomToFitAll(bbox, 0.9);
+  if (!is_external_3dm || !bbox.IsValid()) {
+    const ON_BoundingBox doc_box = document.GetSceneBoundingBox();
+    if (doc_box.IsValid())
+      bbox.Union(doc_box);
+  }
+  if (bbox.IsValid()) {
+    layout.ZoomToFitAll(bbox, 0.88);
+  }
 
   TL_VulkanFourViewRenderer renderer;
   TL_VulkanRenderResult result;
@@ -692,7 +879,15 @@ int RunVulkanRender(const std::string& out_dir, bool use_demo_scene, int* exit_c
   options.sample_count = 4;
   options.enable_depth = true;
   options.enable_shaded_meshes = true;
-  options.cull_backfaces = true;
+  options.cull_backfaces = !is_external_3dm;
+  options.enable_feature_edges = !is_external_3dm;
+  options.curve_line_width = is_external_3dm ? 1.4f : 2.0f;
+  static const float kColorMauve[4] = { 0.796f, 0.651f, 0.969f, 1.0f }; // #cba6f7
+  static const float kColorTeal[4]  = { 0.580f, 0.886f, 0.835f, 1.0f }; // #94e2d5
+  if (is_external_3dm)
+    options.mesh_colors = custom_mesh_colors;
+  else
+    options.mesh_colors = { kColorMauve, kColorTeal };
   const bool rendered = renderer.RenderScene(document, layout, result, meshes, options);
 
   std::printf("vulkan.backend=%s\n", result.backend_name.c_str());
@@ -738,7 +933,7 @@ void PrintUsage() {
   std::printf("  opentl_cli --inspect-3dm <file.3dm>       summarize a .3dm archive\n");
   std::printf("  opentl_cli --inspect-json <file.json>     summarize an .otscene.json file\n");
   std::printf("  opentl_cli --views [--out-dir <dir>]     four-view layout demo (Top/Persp/Front/Right)\n");
-  std::printf("  opentl_cli --render-vulkan [--scene demo] [--out-dir <dir>]\n");
+  std::printf("  opentl_cli --render-vulkan [--scene demo] [--input-3dm <file.3dm>] [--out-dir <dir>]\n");
   std::printf("                                           render four views offline with Vulkan -> fourview.png\n");
 }
 
@@ -750,6 +945,7 @@ int main(int argc, char** argv) {
   std::string mode = "demo";
   std::string out_dir = ".";
   std::string inspect_path;
+  std::string input_3dm_path;
   std::string scene_mode = "demo";
 
   for (int i = 1; i < argc; ++i) {
@@ -783,6 +979,13 @@ int main(int argc, char** argv) {
       mode = "views";
     } else if ("--render-vulkan" == arg) {
       mode = "render-vulkan";
+    } else if ("--input-3dm" == arg) {
+      if (i + 1 >= argc) {
+        std::printf("error: --input-3dm requires a .3dm file argument\n");
+        PrintUsage();
+        return 2;
+      }
+      input_3dm_path = argv[++i];
     } else if ("--scene" == arg) {
       if (i + 1 >= argc) {
         std::printf("error: --scene requires 'demo' or 'minimal'\n");
@@ -804,7 +1007,7 @@ int main(int argc, char** argv) {
 
   if ("render-vulkan" == mode) {
     int code = 0;
-    RunVulkanRender(out_dir, scene_mode != "minimal", &code);
+    RunVulkanRender(out_dir, scene_mode != "minimal", input_3dm_path, &code);
     ON::End();
     return code;
   }

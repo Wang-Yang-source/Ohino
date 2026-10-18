@@ -533,16 +533,24 @@ int GridHalfExtent(const TL_Viewport& vp)
   const double scale = (vp.m_scale > 1e-9) ? vp.m_scale : 1.0;
   const double hx = 0.5 * static_cast<double>(vp.m_width) / scale;
   const double hy = 0.5 * static_cast<double>(vp.m_height) / scale;
-  const double half = std::max(hx, hy) + 1.0;
+  const double half = std::max(hx, hy) + std::fabs(vp.m_target.x) + std::fabs(vp.m_target.y) +
+                      std::fabs(vp.m_target.z) + 1.0;
   if (!ON_IsValid(half))
     return 10;
-  return std::clamp(static_cast<int>(std::ceil(half)), 10, 200);
+  return std::clamp(static_cast<int>(std::ceil(half)), 10, 2000);
 }
 
 void EmitGrid(const TL_Viewport& vp, const ViewportRect& rect, const DepthWindow& window,
               std::vector<LineVertex>& out)
 {
-  const int half = GridHalfExtent(vp);
+  int half = GridHalfExtent(vp);
+  int step = 1;
+  int major_every = 5;
+  if (half > 600)      { step = 50; major_every = 250; }
+  else if (half > 150) { step = 20; major_every = 100; }
+  else if (half > 40)  { step = 5;  major_every = 25; }
+  half = (half / step) * step;
+
   ON_Plane cplane = GridPlaneForView(vp.m_standard_view);
   ON_3dVector back_shift = ON_3dVector::ZeroVector;
   // In orthographic CAD views (TOP / FRONT / RIGHT), the viewport grid is a backdrop:
@@ -558,11 +566,11 @@ void EmitGrid(const TL_Viewport& vp, const ViewportRect& rect, const DepthWindow
     cplane.UpdateEquation();
   }
 
-  for (int i = -half; i <= half; ++i)
+  for (int i = -half; i <= half; i += step)
   {
     if (0 == i)
       continue;
-    const bool major = (0 == (i % 5));
+    const bool major = (0 == (i % major_every));
     std::vector<ON_3dPoint> u_line;
     u_line.push_back(cplane.PointAt(i, -half));
     u_line.push_back(cplane.PointAt(i, half));
@@ -687,13 +695,17 @@ void AppendMeshTriangles(const ON_Mesh& mesh, const TL_Viewport& vp, const Viewp
         p[k] = mesh.m_V[vi];
         if (!vp.WorldToScreen(p[k], s[k]))
           visible = false;
-        // Reject triangles that fall completely outside the viewport rectangle.
-        if (s[k].x < rect.left - 2.0 * vp.m_width || s[k].x > rect.right + 2.0 * vp.m_width ||
-            s[k].y < rect.top - 2.0 * vp.m_height || s[k].y > rect.bottom + 2.0 * vp.m_height)
-          visible = false;
         d[k] = DepthOf(vp, p[k], window);
       }
       if (!visible)
+        continue;
+
+      const double tri_min_x = std::min({ s[0].x, s[1].x, s[2].x });
+      const double tri_max_x = std::max({ s[0].x, s[1].x, s[2].x });
+      const double tri_min_y = std::min({ s[0].y, s[1].y, s[2].y });
+      const double tri_max_y = std::max({ s[0].y, s[1].y, s[2].y });
+      if (tri_max_x < rect.left || tri_min_x > rect.right ||
+          tri_max_y < rect.top || tri_min_y > rect.bottom)
         continue;
 
       ON_3dVector face_normal = ON_CrossProduct(p[1] - p[0], p[2] - p[0]);
@@ -870,11 +882,16 @@ bool TL_VulkanFourViewRenderer::RenderScene(
     // Shaded meshes first (they write depth), wireframe afterwards.
     if (options.enable_shaded_meshes)
     {
-      for (const ON_Mesh* mesh : extra_meshes)
+      for (std::size_t mi = 0; mi < extra_meshes.size(); ++mi)
       {
+        const ON_Mesh* mesh = extra_meshes[mi];
         if (nullptr == mesh)
           continue;
-        AppendMeshTriangles(*mesh, vp, rect, window, kMeshColor, triangles, triangle_count);
+        const float* mesh_color =
+          (mi < options.mesh_colors.size() && nullptr != options.mesh_colors[mi])
+            ? options.mesh_colors[mi]
+            : kMeshColor;
+        AppendMeshTriangles(*mesh, vp, rect, window, mesh_color, triangles, triangle_count);
       }
     }
 

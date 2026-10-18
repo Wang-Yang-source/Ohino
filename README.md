@@ -718,7 +718,7 @@ cmake --build build --config Release -j8
 > | 项目 | 结果 |
 > | --- | --- |
 > | clean build（删除 `build/` 后重新配置） | 通过，0 error；`opentl/src`、`apps`、`tests` 0 warning（其余 warning 均来自 openNURBS/zlib 第三方源码） |
-> | `opentl_tests` | 18 个测试组、2704 项检查、0 失败 |
+> | `opentl_tests` | 19 个测试组、2739 项检查、0 失败 |
 > | `ctest` | 4/4 通过（`opentl_tests`、`opentl_cli_demo`、`opentl_cli_views`、`opentl_cli_vulkan`） |
 > | 四视图布局往返 | `opentl_cli --views` 退出码 0，`views.roundtrip=identical` |
 > | Vulkan 四视图渲染 | `vulkan.device=Apple M4`、`vulkan.backend=Vulkan 1.2.357`、`msaa=4x`、`depth=D32_SFLOAT`、1600×900 PNG 写出成功 |

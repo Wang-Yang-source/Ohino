@@ -61,6 +61,7 @@ struct TL_VulkanRenderOptions
   double crease_angle_degrees = 30.0; ///< Dihedral angle above which an edge counts as a crease
   float feature_line_width = 2.4f; ///< Screen-space width (px) for silhouette & crease lines
   float curve_line_width = 2.0f;   ///< Screen-space width (px) for scene curves & SSX traces
+  std::vector<const float*> mesh_colors; ///< Optional per-mesh RGBA[4] palette overrides (defaults to kMauve)
 };
 
 struct TL_VulkanRenderResult

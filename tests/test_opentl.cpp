@@ -2483,6 +2483,142 @@ void TestIntersectionStage6()
 
   EndSection();
 }
+
+// ---------------------------------------------------------------------------
+// 19. Solid winding number, planar boolean slice, CSG booleans & SubD meshing
+// ---------------------------------------------------------------------------
+namespace {
+
+ON_Mesh MakeTestAxisBoxMesh(const ON_3dPoint& mn, const ON_3dPoint& mx)
+{
+  ON_Mesh box;
+  const ON_3dPoint c[8] = {
+    ON_3dPoint(mn.x, mn.y, mn.z), ON_3dPoint(mx.x, mn.y, mn.z),
+    ON_3dPoint(mx.x, mx.y, mn.z), ON_3dPoint(mn.x, mx.y, mn.z),
+    ON_3dPoint(mn.x, mn.y, mx.z), ON_3dPoint(mx.x, mn.y, mx.z),
+    ON_3dPoint(mx.x, mx.y, mx.z), ON_3dPoint(mn.x, mx.y, mx.z)
+  };
+  for (int i = 0; i < 8; ++i)
+    box.SetVertex(i, c[i]);
+  const int q[6][4] = { { 0, 3, 2, 1 }, { 4, 5, 6, 7 }, { 0, 1, 5, 4 },
+                        { 2, 3, 7, 6 }, { 0, 4, 7, 3 }, { 1, 2, 6, 5 } };
+  for (int i = 0; i < 6; ++i)
+    box.SetQuad(i, q[i][0], q[i][1], q[i][2], q[i][3]);
+  box.ComputeFaceNormals();
+  box.ComputeVertexNormals();
+  return box;
+}
+
+} // anonymous namespace
+
+void TestBooleansAndSubDStage8()
+{
+  BeginSection("solid winding number, planar boolean slice, CSG booleans and SubD meshing");
+
+  // ---- 1. Winding number & point-in-solid classification ----------------
+  const ON_Mesh box_a = MakeTestAxisBoxMesh(ON_3dPoint(-2, -2, -2), ON_3dPoint(2, 2, 2));
+  CHECK_NEAR(TL_MeshSignedVolume(box_a), 64.0, 1e-12);
+  CHECK_NEAR(TL_MeshWindingNumber(box_a, ON_3dPoint(0, 0, 0)), 1.0, 1e-12);
+  CHECK_NEAR(TL_MeshWindingNumber(box_a, ON_3dPoint(5, 0, 0)), 0.0, 1e-12);
+  CHECK(TL_MeshContainsPoint(box_a, ON_3dPoint(0, 0, 0), 1e-6) == TL_PointFaceRelation::Inside);
+  CHECK(TL_MeshContainsPoint(box_a, ON_3dPoint(5, 0, 0), 1e-6) == TL_PointFaceRelation::Outside);
+  CHECK(TL_MeshContainsPoint(box_a, ON_3dPoint(2, 0, 0), 1e-6) == TL_PointFaceRelation::Boundary);
+
+  // ---- 2. CSG Booleans (Union / Intersection / Difference) --------------
+  // box_a: [-2,2]^3 (V = 64)
+  // box_b: [0,4] x [-1,3] x [-1,3] (V = 64)
+  // exact overlap: [0,2] x [-1,2] x [-1,2] -> 2 * 3 * 3 = 18
+  {
+    const ON_Mesh box_b = MakeTestAxisBoxMesh(ON_3dPoint(0, -1, -1), ON_3dPoint(4, 3, 3));
+    ON_Mesh mesh_union, mesh_inter, mesh_diff;
+    CHECK(TL_MeshBoolean(box_a, box_b, TL_BooleanOp::Union, mesh_union));
+    CHECK(TL_MeshBoolean(box_a, box_b, TL_BooleanOp::Intersection, mesh_inter));
+    CHECK(TL_MeshBoolean(box_a, box_b, TL_BooleanOp::Difference, mesh_diff));
+
+    const double vu = TL_MeshSignedVolume(mesh_union);
+    const double vi = TL_MeshSignedVolume(mesh_inter);
+    const double vd = TL_MeshSignedVolume(mesh_diff);
+    CHECK_NEAR(vi, 18.0, 1e-9);
+    CHECK_NEAR(vu, 110.0, 1e-9);
+    CHECK_NEAR(vd, 46.0, 1e-9);
+    // Inclusion-exclusion identities: V(A U B) + V(A n B) == V(A) + V(B) and V(A \ B) + V(A n B) == V(A)
+    CHECK_NEAR(vu + vi, 128.0, 1e-9);
+    CHECK_NEAR(vd + vi, 64.0, 1e-9);
+
+    // Point (1, 0, 0) lies inside both A and B -> inside U and I, outside A \ B.
+    CHECK(TL_MeshContainsPoint(mesh_union, ON_3dPoint(1, 0, 0), 1e-6) == TL_PointFaceRelation::Inside);
+    CHECK(TL_MeshContainsPoint(mesh_inter, ON_3dPoint(1, 0, 0), 1e-6) == TL_PointFaceRelation::Inside);
+    CHECK(TL_MeshContainsPoint(mesh_diff, ON_3dPoint(1, 0, 0), 1e-6) == TL_PointFaceRelation::Outside);
+    // Point (-1, 0, 0) lies inside A only -> inside U and A \ B, outside I.
+    CHECK(TL_MeshContainsPoint(mesh_diff, ON_3dPoint(-1, 0, 0), 1e-6) == TL_PointFaceRelation::Inside);
+    CHECK(TL_MeshContainsPoint(mesh_inter, ON_3dPoint(-1, 0, 0), 1e-6) == TL_PointFaceRelation::Outside);
+  }
+
+  // ---- 3. SubD right-handed box creation, meshing & planar boolean slice
+  {
+    const ON_BoundingBox bbox(ON_3dPoint(-3, -3, 0), ON_3dPoint(3, 3, 4));
+    ON_SubD* subd = TL_CreateSubDBox(bbox, 2, nullptr);
+    CHECK(nullptr != subd);
+    if (nullptr != subd)
+    {
+      ON_Mesh* smesh = TL_MeshFromSubD(*subd, 1, nullptr);
+      CHECK(nullptr != smesh);
+      if (nullptr != smesh)
+      {
+        ON_BoundingBox sbb;
+        CHECK(smesh->GetBoundingBox(sbb));
+        // Symmetry around the input box centre (0, 0, 2) proves the corner ordering is right-handed.
+        CHECK_NEAR(sbb.Center().x, 0.0, 1e-5);
+        CHECK_NEAR(sbb.Center().y, 0.0, 1e-5);
+        CHECK_NEAR(sbb.Center().z, 2.0, 1e-5);
+
+        const double v_whole = TL_MeshSignedVolume(*smesh);
+        CHECK_MSG(v_whole > 0.0, "SubD mesh faces must be wound outward (positive signed volume)");
+        CHECK_NEAR(TL_MeshWindingNumber(*smesh, ON_3dPoint(0, 0, 2)), 1.0, 1e-9);
+
+        ON_3dVector cut_n(0.4, -0.3, 0.85);
+        cut_n.Unitize();
+        const ON_Plane cut_plane(ON_3dPoint(0, 0, 2), cut_n);
+        ON_Mesh pos_half, neg_half;
+        std::vector<std::vector<ON_3dPoint>> section_loops;
+        const int loops = TL_SliceMeshWithPlane(*smesh, cut_plane, true, &pos_half, &neg_half,
+                                                &section_loops);
+        CHECK_EQ_INT(loops, 1);
+        CHECK(!section_loops.empty() && section_loops[0].size() >= 12);
+
+        const double v_pos = TL_MeshSignedVolume(pos_half);
+        const double v_neg = TL_MeshSignedVolume(neg_half);
+        CHECK(v_pos > 10.0 && v_neg > 10.0);
+        CHECK_NEAR(v_pos + v_neg, v_whole, 1e-5);
+        delete smesh;
+      }
+      delete subd;
+    }
+  }
+
+  // ---- 4. TL_ExtractBrepMesh on a procedural ON_Brep box (uncached fallback)
+  {
+    const ON_3dPoint corners[8] = {
+      ON_3dPoint(-2, -3, 0), ON_3dPoint(2, -3, 0), ON_3dPoint(2, 3, 0), ON_3dPoint(-2, 3, 0),
+      ON_3dPoint(-2, -3, 5), ON_3dPoint(2, -3, 5), ON_3dPoint(2, 3, 5), ON_3dPoint(-2, 3, 5)
+    };
+    ON_Brep* brep_box = ON_BrepBox(corners);
+    CHECK(nullptr != brep_box);
+    if (nullptr != brep_box)
+    {
+      ON_Mesh extracted;
+      const int added = TL_ExtractBrepMesh(*brep_box, extracted, false);
+      CHECK(added > 0);
+      CHECK(extracted.VertexCount() > 0 && extracted.m_F.Count() == added);
+      // Volume of [-2,2] x [-3,3] x [0,5] is 4 * 6 * 5 = 120.
+      CHECK_NEAR(std::fabs(TL_MeshSignedVolume(extracted)), 120.0, 1e-6);
+      delete brep_box;
+    }
+  }
+
+  EndSection();
+}
+
 int main() {
   ON::Begin();
 
@@ -2507,6 +2643,7 @@ int main() {
   TestVulkanRenderer();
   TestMeshCapping();
   TestIntersectionStage6();
+  TestBooleansAndSubDStage8();
 
   std::printf("\n=====================\n");
   std::printf("sections=%d checks=%d failures=%d failed_sections=%d\n", g_state.section_index,

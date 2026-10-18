@@ -109,3 +109,20 @@ TL_FUNCTION int TL_ExtractMeshFeatureEdges(
   ON_SimpleArray<int>* out_kinds = nullptr,
   bool include_silhouette = true
 );
+
+/**
+ * Extract or tessellate a triangle/quad `ON_Mesh` from an `ON_Brep`.
+ *
+ * Uses each face's cached render/analysis mesh when present in a `.3dm` archive (whose
+ * face winding already reflects `ON_BrepFace::m_bRev`), and falls back to trimmed `(u, v)`
+ * grid tessellation filtered by `TL_Brep::PointIsOnFace` for uncached faces.
+ *
+ * When `append` is true, vertices and faces are appended to `out_mesh` instead of clearing
+ * it first (allowing callers to batch multiple Breps on the same layer into one mesh).
+ * Returns the number of faces added.
+ */
+TL_FUNCTION int TL_ExtractBrepMesh(
+  const ON_Brep& brep,
+  ON_Mesh& out_mesh,
+  bool append = false
+);

@@ -635,6 +635,7 @@ ObjectKind InferredKindFromGeometry(const ON_Geometry* geometry, bool* payload_o
   }
   if (nullptr != ON_PlaneSurface::Cast(geometry)) return ObjectKind::Plane;
   if (nullptr != ON_NurbsCurve::Cast(geometry)) return ObjectKind::NurbsCurve;
+  if (nullptr != ON_Curve::Cast(geometry)) return ObjectKind::NurbsCurve;
   if (payload_ok) *payload_ok = false;
   return ObjectKind::Point;
 }
@@ -681,9 +682,16 @@ bool FillPayloadFromGeometry(const ON_Geometry* geometry, SceneObject& object) {
       return true;
     }
     case ObjectKind::NurbsCurve: {
-      const ON_NurbsCurve* nurbs = ON_NurbsCurve::Cast(geometry);
-      object.nurbs_val = *nurbs;
-      return true;
+      if (const ON_NurbsCurve* nurbs = ON_NurbsCurve::Cast(geometry)) {
+        object.nurbs_val = *nurbs;
+        return true;
+      }
+      if (const ON_Curve* generic_curve = ON_Curve::Cast(geometry)) {
+        if (generic_curve->GetNurbForm(object.nurbs_val) > 0 && object.nurbs_val.IsValid()) {
+          return true;
+        }
+      }
+      return false;
     }
   }
   return false;

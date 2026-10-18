@@ -1,4 +1,5 @@
 #include "opentl/meshing/tl_meshing.h"
+#include "opentl/tl_promote.h"
 
 #include <algorithm>
 #include <cmath>
@@ -596,4 +597,131 @@ TL_FUNCTION int TL_ExtractMeshFeatureEdges(
   }
 
   return appended;
+}
+
+// ============================================================================
+// Brep mesh extraction & trimmed-face fallback tessellation
+// ============================================================================
+
+TL_FUNCTION int TL_ExtractBrepMesh(
+  const ON_Brep& brep,
+  ON_Mesh& out_mesh,
+  bool append
+)
+{
+  if (!append)
+    out_mesh.Destroy();
+
+  const TL_Brep* tl_brep = TL_Brep::Promote(&brep);
+  int added_faces = 0;
+
+  for (int fi = 0; fi < brep.m_F.Count(); ++fi)
+  {
+    const ON_BrepFace& face = brep.m_F[fi];
+    const ON_Mesh* cached = face.Mesh(ON::render_mesh);
+    if (nullptr == cached)
+      cached = face.Mesh(ON::any_mesh);
+
+    if (nullptr != cached && cached->VertexCount() > 0 && cached->m_F.Count() > 0)
+    {
+      const int v_base = out_mesh.VertexCount();
+      const int src_v_count = cached->VertexCount();
+      const bool has_normals = (cached->m_N.Count() == src_v_count);
+      out_mesh.m_V.Reserve(v_base + src_v_count);
+      out_mesh.m_N.Reserve(v_base + src_v_count);
+
+      for (int vi = 0; vi < src_v_count; ++vi)
+      {
+        out_mesh.m_V.Append(cached->m_V[vi]);
+        if (has_normals)
+          out_mesh.m_N.Append(cached->m_N[vi]);
+        else
+          out_mesh.m_N.Append(ON_3fVector::ZeroVector);
+      }
+
+      const int f_base = out_mesh.m_F.Count();
+      const int src_f_count = cached->m_F.Count();
+      out_mesh.m_F.Reserve(f_base + src_f_count);
+      for (int k = 0; k < src_f_count; ++k)
+      {
+        ON_MeshFace mf = cached->m_F[k];
+        mf.vi[0] += v_base;
+        mf.vi[1] += v_base;
+        mf.vi[2] += v_base;
+        mf.vi[3] += v_base;
+        out_mesh.m_F.Append(mf);
+        ++added_faces;
+      }
+      continue;
+    }
+
+    // Fallback for uncached Brep faces: sample the underlying surface on a (u, v) grid
+    // and keep cells whose midpoint is classified inside/boundary by TL_Brep::PointIsOnFace.
+    const ON_Surface* srf = face.SurfaceOf();
+    if (nullptr == srf)
+      continue;
+    const ON_Interval dom_u = face.Domain(0);
+    const ON_Interval dom_v = face.Domain(1);
+    if (!dom_u.IsIncreasing() || !dom_v.IsIncreasing())
+      continue;
+
+    const int nu = 16;
+    const int nv = 16;
+    const int v_base = out_mesh.VertexCount();
+    for (int iu = 0; iu <= nu; ++iu)
+    {
+      const double u = dom_u.ParameterAt(static_cast<double>(iu) / static_cast<double>(nu));
+      for (int iv = 0; iv <= nv; ++iv)
+      {
+        const double v = dom_v.ParameterAt(static_cast<double>(iv) / static_cast<double>(nv));
+        ON_3dPoint pt = ON_3dPoint::Origin;
+        ON_3dVector du = ON_3dVector::ZeroVector, dv = ON_3dVector::ZeroVector;
+        if (!srf->Ev1Der(u, v, pt, du, dv))
+          pt = srf->PointAt(u, v);
+        ON_3dVector n = ON_CrossProduct(du, dv);
+        n.Unitize();
+        if (face.m_bRev)
+          n = -n;
+        out_mesh.m_V.Append(ON_3fPoint(pt));
+        out_mesh.m_N.Append(ON_3fVector(n));
+      }
+    }
+
+    for (int iu = 0; iu < nu; ++iu)
+    {
+      for (int iv = 0; iv < nv; ++iv)
+      {
+        const double u_mid = dom_u.ParameterAt((iu + 0.5) / static_cast<double>(nu));
+        const double v_mid = dom_v.ParameterAt((iv + 0.5) / static_cast<double>(nv));
+        if (nullptr != tl_brep)
+        {
+          if (tl_brep->PointIsOnFace(fi, ON_2dPoint(u_mid, v_mid), 1e-6, 1e-6) <= 0)
+            continue;
+        }
+        const int i00 = v_base + iu * (nv + 1) + iv;
+        const int i10 = v_base + (iu + 1) * (nv + 1) + iv;
+        const int i11 = v_base + (iu + 1) * (nv + 1) + (iv + 1);
+        const int i01 = v_base + iu * (nv + 1) + (iv + 1);
+        ON_MeshFace mf;
+        if (face.m_bRev)
+        {
+          mf.vi[0] = i00; mf.vi[1] = i01; mf.vi[2] = i11; mf.vi[3] = i10;
+        }
+        else
+        {
+          mf.vi[0] = i00; mf.vi[1] = i10; mf.vi[2] = i11; mf.vi[3] = i01;
+        }
+        out_mesh.m_F.Append(mf);
+        ++added_faces;
+      }
+    }
+  }
+
+  if (!append && out_mesh.m_F.Count() > 0)
+  {
+    out_mesh.ComputeFaceNormals();
+    if (out_mesh.m_N.Count() != out_mesh.VertexCount())
+      out_mesh.ComputeVertexNormals();
+  }
+  return added_faces;
 }

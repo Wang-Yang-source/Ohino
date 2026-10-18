@@ -14,3 +14,13 @@ TL_FUNCTION ON_SubD* TL_CreateSubDBox(
   unsigned int subdivision_levels = 1,
   ON_SubD* result = nullptr
 );
+
+/**
+ * Convert an ON_SubD (optionally subdivided `extra_subdivision_levels` further steps)
+ * into a smooth-shaded ON_Mesh with computed face and vertex normals.
+ */
+TL_FUNCTION ON_Mesh* TL_MeshFromSubD(
+  const ON_SubD& subd,
+  unsigned int extra_subdivision_levels = 0,
+  ON_Mesh* result = nullptr
+);

@@ -418,8 +418,26 @@ void TL_Viewport::ZoomToFit(const ON_BoundingBox& world_bbox, double margin)
   }
 
   const double tan_half = std::tan(0.5 * VerticalFieldOfView());
-  const double radius = std::max(max_r, 1e-9);
-  m_target_distance = radius / (tan_half * m);
+  const double aspect = (m_height > 0)
+    ? (static_cast<double>(m_width) / static_cast<double>(m_height))
+    : 1.0;
+  const double half_tan_y = std::max(1e-9, m * tan_half);
+  const double half_tan_x = std::max(1e-9, m * tan_half * aspect);
+
+  // Exact perspective frustum fit over all 8 corners: for a corner offset `d = corner - center`,
+  // its depth in front of the eye is `z = dist + dot(d, m_camera_dir)`, and it stays inside the
+  // `m`-scaled viewport iff `dist >= -dot(d, m_camera_dir) + max(|dot(d, right)| / half_tan_x,
+  //                                                              |dot(d, up)|    / half_tan_y)`.
+  double required_dist = std::max(max_r, 1e-9) / half_tan_y;
+  for (int i = 0; i < n; ++i)
+  {
+    const ON_3dVector d = corners[i] - center;
+    const double proj_x = std::fabs(ON_DotProduct(d, right)) / half_tan_x;
+    const double proj_y = std::fabs(ON_DotProduct(d, up)) / half_tan_y;
+    const double towards_eye = -ON_DotProduct(d, m_camera_dir);
+    required_dist = std::max(required_dist, towards_eye + std::max(proj_x, proj_y));
+  }
+  m_target_distance = required_dist;
 }
 
 void TL_Viewport::SetStandardView(int standard_view)
