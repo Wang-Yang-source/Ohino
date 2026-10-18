@@ -27,6 +27,8 @@
 
 #include "opentl/opentl.h"
 
+#include <fstream>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -2612,7 +2614,152 @@ void TestBooleansAndSubDStage8()
       CHECK(extracted.VertexCount() > 0 && extracted.m_F.Count() == added);
       // Volume of [-2,2] x [-3,3] x [0,5] is 4 * 6 * 5 = 120.
       CHECK_NEAR(std::fabs(TL_MeshSignedVolume(extracted)), 120.0, 1e-6);
+
+      std::vector<std::vector<ON_3dPoint>> edge_polylines;
+      const int edge_count = TL_ExtractBrepEdgePolylines(*brep_box, edge_polylines, 8);
+      CHECK_EQ_INT(edge_count, 12);
+      CHECK_EQ_INT(static_cast<int>(edge_polylines.size()), 12);
       delete brep_box;
+    }
+  }
+
+  EndSection();
+}
+
+
+// ---------------------------------------------------------------------------
+// Stage 10/11: Grasshopper .gh parsing + DAG solve + Rhino 9 studio GUI layout
+// ---------------------------------------------------------------------------
+void TestGrasshopperAndStudioGui() {
+  BeginSection("Grasshopper .gh archive, DAG solve, studio GUI");
+
+  const std::string tutorials =
+    "/Users/waya/Projects/Rhino/Rhino 9 WIP/Plug-ins/Grasshopper/Tutorials/";
+
+  // ---- 1. Every shipped Rhino 9 tutorial definition must load byte-exactly.
+  const char* files[] = {
+    "00 From Rhino To Grasshopper.gh",
+    "01 Simple Input and Maths.gh",
+    "02 Interpolating Values.gh",
+    "03 Wires and Conversions.gh",
+    "04 Polynomial Graphing with Derivatives.gh",
+    "05 Measure and Display Values.gh",
+    "06 Adaptive Pattern within Shape.gh",
+    "07 Column Arcade.gh"
+  };
+  int loaded = 0;
+  for (const char* name : files) {
+    const std::string path = tutorials + name;
+    std::ifstream probe(path, std::ios::binary);
+    if (!probe.good()) continue;
+    probe.close();
+    TL_GhDocument doc;
+    std::string error;
+    const bool ok = doc.LoadFile(path, &error);
+    CHECK(ok);
+    if (!ok) {
+      std::printf("   load failed %s: %s\n", name, error.c_str());
+      continue;
+    }
+    ++loaded;
+    CHECK(doc.Nodes().size() >= 6);
+    // Pure parameter definitions (00) legitimately have zero component ports.
+    CHECK(doc.CanvasBounds().w > 1.0f && doc.CanvasBounds().h > 1.0f);
+    CHECK(doc.TopologicalOrder().size() == doc.Nodes().size());
+    opentl::mvp::SceneDocument baked;
+    std::vector<ON_Mesh*> meshes;
+    const int baked_count = doc.BakeToScene(baked, meshes);
+    CHECK(baked_count >= 0);
+    for (ON_Mesh* m : meshes) delete m;
+  }
+  if (loaded == 0) {
+    // Reference definitions are an external fixture; keep the suite runnable.
+    std::printf("   (Rhino 9 tutorial .gh fixtures not found - skipped)\n");
+    CHECK(true);
+  } else {
+    CHECK_EQ_INT(loaded, 8);
+  }
+
+  // ---- 2. Slider edit must propagate through the DAG (07 Column Arcade).
+  {
+    const std::string path = tutorials + "07 Column Arcade.gh";
+    std::ifstream probe(path, std::ios::binary);
+    if (probe.good()) {
+      probe.close();
+      TL_GhDocument doc;
+      std::string error;
+      CHECK(doc.LoadFile(path, &error));
+      CHECK_EQ_INT((int)doc.SliderCount(), 3);
+      CHECK(doc.Wires().size() > 10);
+      const size_t nodes_before = doc.Nodes().size();
+      CHECK(doc.SetSliderValueByOrdinal(0, 30.0));
+      CHECK_EQ_INT((int)doc.Nodes().size(), (int)nodes_before);
+      // Segment count changed -> divide-curve output count changes downstream.
+      size_t divide_points = 0;
+      for (const auto& n : doc.Nodes()) {
+        if (n.name == "Divide Curve" && !n.outputs.empty())
+          divide_points = n.outputs[0].runtime_data.size();
+      }
+      CHECK(divide_points > 0);
+      CHECK(doc.SetSliderValue("Segments", 12.0));
+      size_t divide_points_after = 0;
+      for (const auto& n : doc.Nodes()) {
+        if (n.name == "Divide Curve" && !n.outputs.empty())
+          divide_points_after = n.outputs[0].runtime_data.size();
+      }
+      CHECK(divide_points_after > 0);
+      CHECK(divide_points_after != divide_points);
+    }
+  }
+
+  // ---- 3. Studio workbench layout regions tile the 1920x1080 canvas.
+  {
+    const TL_GuiStudioRects rects = TL_ComputeStudioRects(1920, 1080);
+    CHECK_NEAR(rects.viewports.w, 1920.0 - rects.dock.w - rects.gh_canvas.w, 1.0);
+    CHECK(rects.viewports.h > 900.0f);
+    CHECK_NEAR(rects.status.y + rects.status.h, 1080.0, 0.5);
+    CHECK_NEAR(rects.gh_canvas.y, rects.viewports.y, 0.5);
+    CHECK(rects.gh_params.y + rects.gh_params.h <= rects.status.y + 0.5f);
+
+    TL_FourViewLayout layout = TL_FourViewLayout::Default(1600, 900);
+    TL_ApplyStudioViewports(layout, rects);
+    CHECK_EQ_INT(layout.CanvasWidth(), 1920);
+    CHECK_EQ_INT(layout.View(0).m_left, (int)rects.viewports.x);
+    CHECK_EQ_INT(layout.View(0).m_top, (int)rects.viewports.y);
+    CHECK(layout.View(3).m_left > layout.View(0).m_left);
+    CHECK(layout.View(2).m_top > layout.View(0).m_top);
+
+    TL_GuiOverlay overlay;
+    TL_GuiStudioInfo info;
+    info.object_count = 383;
+    info.mesh_count = 6;
+    TL_BuildStudioOverlay(rects, nullptr, info, overlay);
+    CHECK(overlay.enabled);
+    CHECK(overlay.fills.size() > 20);
+    CHECK(overlay.texts.size() > 20);
+    bool found_title = false;
+    for (const auto& t : overlay.texts)
+      if (t.text.find("OHINO") != std::string::npos) found_title = true;
+    CHECK(found_title);
+  }
+
+  // ---- 4. GH node graph renders into the overlay (groups, wires, sliders).
+  {
+    const std::string path = tutorials + "07 Column Arcade.gh";
+    std::ifstream probe(path, std::ios::binary);
+    if (probe.good()) {
+      probe.close();
+      TL_GhDocument doc;
+      std::string error;
+      if (doc.LoadFile(path, &error)) {
+        const TL_GuiStudioRects rects = TL_ComputeStudioRects(1920, 1080);
+        TL_GuiOverlay overlay;
+        TL_GuiStudioInfo info;
+        TL_BuildStudioOverlay(rects, &doc, info, overlay);
+        CHECK(overlay.lines.size() > doc.Wires().size());   // wires + slider tracks
+        CHECK(overlay.fills.size() > 100);                  // nodes + ports + chrome
+        CHECK(overlay.texts.size() > 40);
+      }
     }
   }
 
@@ -2644,6 +2791,7 @@ int main() {
   TestMeshCapping();
   TestIntersectionStage6();
   TestBooleansAndSubDStage8();
+  TestGrasshopperAndStudioGui();
 
   std::printf("\n=====================\n");
   std::printf("sections=%d checks=%d failures=%d failed_sections=%d\n", g_state.section_index,

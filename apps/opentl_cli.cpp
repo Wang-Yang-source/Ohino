@@ -596,7 +596,8 @@ int RunFourViewDemo(const std::string& out_dir, int* exit_code) {
 // ---------------------------------------------------------------------------
 
 int RunVulkanRender(const std::string& out_dir, bool use_demo_scene,
-                    const std::string& input_3dm_path, int* exit_code) {
+                    const std::string& input_3dm_path, int* exit_code,
+                    bool gui_mode = false, const std::string& input_gh_path = std::string()) {
   opentl::mvp::SceneDocument document;
   std::vector<ON_Mesh*> owned_meshes;
   std::vector<const ON_Mesh*> meshes;
@@ -644,8 +645,9 @@ int RunVulkanRender(const std::string& out_dir, bool use_demo_scene,
     }
 
     std::vector<ON_Mesh*> layer_meshes(64, nullptr);
+    std::vector<std::vector<ON_3dPoint>> chassis_edge_polylines;
     int brep_count = 0, solid_brep_count = 0, extrusion_count = 0;
-    int total_brep_faces = 0, classified_faces = 0;
+    int total_brep_faces = 0, total_brep_edges = 0, classified_faces = 0;
     double total_solid_volume = 0.0;
 
     ONX_ModelComponentIterator it(model, ON_ModelComponent::Type::ModelGeometry);
@@ -666,6 +668,9 @@ int RunVulkanRender(const std::string& out_dir, bool use_demo_scene,
       if (const ON_Brep* brep = ON_Brep::Cast(geom)) {
         ++brep_count;
         total_brep_faces += brep->m_F.Count();
+        total_brep_edges += brep->m_E.Count();
+        if (li == 0 || li == 2)
+          TL_ExtractBrepEdgePolylines(*brep, chassis_edge_polylines, 10);
         ON_Mesh single_brep_mesh;
         TL_ExtractBrepMesh(*brep, single_brep_mesh, false);
         if (brep->IsSolid()) {
@@ -735,12 +740,20 @@ int RunVulkanRender(const std::string& out_dir, bool use_demo_scene,
     std::printf("vulkan.3dm_file=%s layers=%zu curves=%zu breps=%d solid_breps=%d extrusions=%d\n",
                 input_3dm_path.c_str(), document.Layers().size(), document.ObjectCount(),
                 brep_count, solid_brep_count, extrusion_count);
-    std::printf("vulkan.3dm_brep_faces=%d classified_breps=%d solid_volume=%.2f\n",
-                total_brep_faces, classified_faces, total_solid_volume);
-    // When solid Breps/Extrusions are present, clear 2D construction sketch curves so stray
-    // construction outlines do not bleed over the shaded 3D assembly.
-    if (!owned_meshes.empty())
+    std::printf("vulkan.3dm_brep_faces=%d brep_edges=%d classified_breps=%d solid_volume=%.2f\n",
+                total_brep_faces, total_brep_edges, classified_faces, total_solid_volume);
+    // When solid Breps/Extrusions are present, replace 2D construction sketch curves with
+    // the exact 3D topological edges of the chassis Breps in subtle Catppuccin Surface2.
+    if (!owned_meshes.empty()) {
       document.Clear();
+      document.AddLayer("BrepEdges", 88, 91, 112, true); // Catppuccin Surface2 (#585b70)
+      for (const auto& poly : chassis_edge_polylines) {
+        if (poly.size() == 2)
+          document.AddLine(ON_Line(poly[0], poly[1]), "edge", "BrepEdges");
+        else if (poly.size() > 2)
+          document.AddPolyline(poly, "edge", "BrepEdges");
+      }
+    }
   } else if (use_demo_scene) {
     DemoScene scene;
     BuildDemoScene(scene);
@@ -857,7 +870,34 @@ int RunVulkanRender(const std::string& out_dir, bool use_demo_scene,
     }
   }
 
+  // ---- Grasshopper definition (optional) ---------------------------------
+  TL_GhDocument gh_document;
+  bool have_gh = false;
+  std::vector<ON_Mesh*> gh_meshes;
+  std::vector<const float*> gh_colors;
+  if (!input_gh_path.empty()) {
+    std::string gh_error;
+    have_gh = gh_document.LoadFile(input_gh_path, &gh_error);
+    if (have_gh) {
+      const int baked = gh_document.BakeToScene(document, gh_meshes, &gh_colors);
+      std::printf("%s\n", gh_document.FormatSummary().c_str());
+      std::printf("gh.baked=%d\n", baked);
+      for (size_t i = 0; i < gh_meshes.size(); ++i) {
+        owned_meshes.push_back(gh_meshes[i]);
+        meshes.push_back(gh_meshes[i]);
+        custom_mesh_colors.push_back(i < gh_colors.size() ? gh_colors[i] : nullptr);
+      }
+    } else {
+      std::printf("gh.error=%s\n", gh_error.c_str());
+    }
+  }
+
   TL_FourViewLayout layout = TL_FourViewLayout::Default(1600, 900);
+  TL_GuiStudioRects studio_rects;
+  if (gui_mode) {
+    studio_rects = TL_ComputeStudioRects(1920, 1080);
+    TL_ApplyStudioViewports(layout, studio_rects);
+  }
   ON_BoundingBox bbox;
   for (const ON_Mesh* mesh : owned_meshes) {
     ON_BoundingBox mesh_box;
@@ -870,7 +910,8 @@ int RunVulkanRender(const std::string& out_dir, bool use_demo_scene,
       bbox.Union(doc_box);
   }
   if (bbox.IsValid()) {
-    layout.ZoomToFitAll(bbox, 0.88);
+    layout.ZoomToFitAll(bbox, gui_mode ? 0.94 : 0.88);
+    if (gui_mode) TL_ApplyStudioViewports(layout, studio_rects);
   }
 
   TL_VulkanFourViewRenderer renderer;
@@ -884,10 +925,28 @@ int RunVulkanRender(const std::string& out_dir, bool use_demo_scene,
   options.curve_line_width = is_external_3dm ? 1.4f : 2.0f;
   static const float kColorMauve[4] = { 0.796f, 0.651f, 0.969f, 1.0f }; // #cba6f7
   static const float kColorTeal[4]  = { 0.580f, 0.886f, 0.835f, 1.0f }; // #94e2d5
-  if (is_external_3dm)
+  if (is_external_3dm || have_gh)
     options.mesh_colors = custom_mesh_colors;
   else
     options.mesh_colors = { kColorMauve, kColorTeal };
+
+  TL_GuiOverlay overlay;
+  if (gui_mode) {
+    TL_GuiStudioInfo info;
+    info.title = "OHINO STUDIO 9 WIP";
+    info.command = "COMMAND: _GRASSHOPPER _OPEN " + (have_gh ? gh_document.DocumentName() : std::string("(NONE)"));
+    info.object_count = document.Objects().size();
+    info.mesh_count = meshes.size();
+    if (have_gh) {
+      char gbuf[160];
+      std::snprintf(gbuf, sizeof(gbuf), "%zu NODES   %zu WIRES   %zu SLIDERS   %d BAKED",
+                    gh_document.Nodes().size(), gh_document.Wires().size(),
+                    gh_document.SliderCount(), 0);
+      info.gh_title = gbuf;
+    }
+    TL_BuildStudioOverlay(studio_rects, have_gh ? &gh_document : nullptr, info, overlay);
+    options.gui = overlay;
+  }
   const bool rendered = renderer.RenderScene(document, layout, result, meshes, options);
 
   std::printf("vulkan.backend=%s\n", result.backend_name.c_str());
@@ -897,6 +956,13 @@ int RunVulkanRender(const std::string& out_dir, bool use_demo_scene,
   std::printf("vulkan.theme=%s msaa=%dx depth=%s\n", result.theme_name.c_str(),
               result.msaa_samples, result.depth_enabled ? "D32_SFLOAT" : "disabled");
   std::printf("vulkan.feature_edges=%zu (silhouette + crease)\n", result.feature_edge_count);
+  if (gui_mode) {
+    std::printf("gui.layout=%dx%d viewports=%dx%d gh_canvas=%dx%d widget_fills=%zu widget_lines=%zu widget_texts=%zu\n",
+                studio_rects.width, studio_rects.height, (int)studio_rects.viewports.w,
+                (int)studio_rects.viewports.h, (int)studio_rects.gh_canvas.w,
+                (int)studio_rects.gh_canvas.h, options.gui.fills.size(),
+                options.gui.lines.size(), options.gui.texts.size());
+  }
   std::printf("vulkan.render=%s\n", rendered ? "ok" : "failed");
   if (!rendered) {
     std::printf("vulkan.error=%s\n", result.error.c_str());
@@ -910,7 +976,7 @@ int RunVulkanRender(const std::string& out_dir, bool use_demo_scene,
 
   std::error_code ec;
   std::filesystem::create_directories(out_dir, ec);
-  const std::string path = (std::filesystem::path(out_dir) / "fourview.png").string();
+  const std::string path = (std::filesystem::path(out_dir) / (gui_mode ? "studio.png" : "fourview.png")).string();
   std::string save_error;
   const bool saved = TL_VulkanFourViewRenderer::SavePng(path, result.width, result.height,
                                                         result.rgba, &save_error);
@@ -934,6 +1000,8 @@ void PrintUsage() {
   std::printf("  opentl_cli --inspect-json <file.json>     summarize an .otscene.json file\n");
   std::printf("  opentl_cli --views [--out-dir <dir>]     four-view layout demo (Top/Persp/Front/Right)\n");
   std::printf("  opentl_cli --render-vulkan [--scene demo] [--input-3dm <file.3dm>] [--out-dir <dir>]\n");
+  std::printf("  opentl_cli --render-gui [--input-3dm <file.3dm>] [--input-gh <file.gh>] [--out-dir <dir>]\n");
+  std::printf("             Rhino 9 style studio workbench: 4 viewports + Grasshopper canvas\n");
   std::printf("                                           render four views offline with Vulkan -> fourview.png\n");
 }
 
@@ -947,6 +1015,7 @@ int main(int argc, char** argv) {
   std::string inspect_path;
   std::string input_3dm_path;
   std::string scene_mode = "demo";
+  std::string input_gh_path;
 
   for (int i = 1; i < argc; ++i) {
     const std::string arg = (nullptr != argv[i]) ? argv[i] : "";
@@ -979,6 +1048,15 @@ int main(int argc, char** argv) {
       mode = "views";
     } else if ("--render-vulkan" == arg) {
       mode = "render-vulkan";
+    } else if ("--render-gui" == arg) {
+      mode = "render-gui";
+    } else if ("--input-gh" == arg) {
+      if (i + 1 >= argc) {
+        std::printf("error: --input-gh requires a .gh/.ghx file argument\n");
+        PrintUsage();
+        return 2;
+      }
+      input_gh_path = argv[++i];
     } else if ("--input-3dm" == arg) {
       if (i + 1 >= argc) {
         std::printf("error: --input-3dm requires a .3dm file argument\n");
@@ -1005,9 +1083,10 @@ int main(int argc, char** argv) {
 
   std::printf("opentl_cli mode=%s\n", mode.c_str());
 
-  if ("render-vulkan" == mode) {
+  if ("render-vulkan" == mode || "render-gui" == mode) {
     int code = 0;
-    RunVulkanRender(out_dir, scene_mode != "minimal", input_3dm_path, &code);
+    RunVulkanRender(out_dir, scene_mode != "minimal", input_3dm_path, &code,
+                    "render-gui" == mode, input_gh_path);
     ON::End();
     return code;
   }

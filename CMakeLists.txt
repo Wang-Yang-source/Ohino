@@ -23,6 +23,8 @@ set(OPENTL_SOURCES
     src/mvp/scene_io.cpp
     src/viewport/tl_viewport.cpp
     src/viewport/tl_vulkan_renderer.cpp
+    src/gh/tl_gh.cpp
+    src/gui/tl_gui.cpp
 )
 
 # Optional Vulkan backend for the four-view renderer (MoltenVK on macOS, native on Win/Linux).
@@ -65,3 +67,4 @@ target_link_libraries(opentl_cli PRIVATE opentl)
 add_test(NAME opentl_cli_demo COMMAND opentl_cli --demo --out-dir "${CMAKE_CURRENT_BINARY_DIR}/demo_out")
 add_test(NAME opentl_cli_views COMMAND opentl_cli --views --out-dir "${CMAKE_CURRENT_BINARY_DIR}/views_out")
 add_test(NAME opentl_cli_vulkan COMMAND opentl_cli --render-vulkan --out-dir "${CMAKE_CURRENT_BINARY_DIR}/vulkan_out")
+add_test(NAME opentl_cli_gui COMMAND opentl_cli --render-gui --out-dir "${CMAKE_CURRENT_BINARY_DIR}/gui_out")

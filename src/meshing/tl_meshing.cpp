@@ -725,3 +725,50 @@ TL_FUNCTION int TL_ExtractBrepMesh(
   }
   return added_faces;
 }
+
+TL_FUNCTION int TL_ExtractBrepEdgePolylines(
+  const ON_Brep& brep,
+  std::vector<std::vector<ON_3dPoint>>& out_polylines,
+  int curved_edge_samples
+)
+{
+  const int samples = std::clamp(curved_edge_samples, 2, 128);
+  int added = 0;
+
+  for (int ei = 0; ei < brep.m_E.Count(); ++ei)
+  {
+    const ON_BrepEdge& edge = brep.m_E[ei];
+    const ON_Curve* c3 = edge.EdgeCurveOf();
+    if (nullptr == c3)
+      continue;
+    const ON_Interval dom = edge.Domain();
+    if (!dom.IsIncreasing())
+      continue;
+
+    if (edge.IsLinear(1e-5))
+    {
+      const ON_3dPoint p0 = edge.PointAtStart();
+      const ON_3dPoint p1 = edge.PointAtEnd();
+      if (p0.DistanceTo(p1) > 1e-9)
+      {
+        out_polylines.push_back({ p0, p1 });
+        ++added;
+      }
+      continue;
+    }
+
+    std::vector<ON_3dPoint> poly;
+    poly.reserve(static_cast<size_t>(samples + 1));
+    for (int k = 0; k <= samples; ++k)
+    {
+      const double t = dom.ParameterAt(static_cast<double>(k) / static_cast<double>(samples));
+      poly.push_back(edge.PointAt(t));
+    }
+    if (poly.size() >= 2)
+    {
+      out_polylines.push_back(std::move(poly));
+      ++added;
+    }
+  }
+  return added;
+}

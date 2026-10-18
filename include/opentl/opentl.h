@@ -16,3 +16,5 @@
 #include "mvp/rhino_mvp.h"
 #include "viewport/tl_viewport.h"
 #include "viewport/tl_vulkan_renderer.h"
+#include "gh/tl_gh.h"
+#include "gui/tl_gui.h"

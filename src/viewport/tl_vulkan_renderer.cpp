@@ -509,6 +509,31 @@ void EmitLabel(std::vector<LineVertex>& out, const char* text, double x, double 
   }
 }
 
+void EmitLabelDepth(std::vector<LineVertex>& out, const char* text, double x, double y,
+                    double pixel, const float* color, double depth)
+{
+  double cursor = x;
+  for (const char* p = text; nullptr != p && *p != '\0'; ++p)
+  {
+    const uint8_t* rows = FindGlyph(*p);
+    if (nullptr != rows)
+    {
+      for (int row = 0; row < 7; ++row)
+      {
+        for (int col = 0; col < 5; ++col)
+        {
+          if (0 == (rows[row] & (1u << (4 - col))))
+            continue;
+          const double px = cursor + col * pixel;
+          const double py = y + row * pixel;
+          EmitSegment(out, ON_2dPoint(px, py), ON_2dPoint(px + pixel, py), depth, depth, color);
+        }
+      }
+    }
+    cursor += 6.0 * pixel;
+  }
+}
+
 ON_Plane GridPlaneForView(int standard_view)
 {
   switch (standard_view)
@@ -1001,6 +1026,50 @@ bool TL_VulkanFourViewRenderer::RenderScene(
       EmitSegment(lines, ON_2dPoint(origin_screen.x, origin_screen.y - 5.0),
                   ON_2dPoint(origin_screen.x, origin_screen.y + 5.0), origin_depth, origin_depth,
                   kOrigin);
+    }
+  }
+
+  // ---- screen-space GUI overlay (Rhino 9 style studio chrome) -------------
+  if (options.gui.enabled)
+  {
+    const double kUiDepth = 0.0; // depth of screen-space HUD labels
+    for (const TL_GuiFill& f : options.gui.fills)
+    {
+      if (f.w <= 0.0f || f.h <= 0.0f)
+        continue;
+      const double y0 = f.y;
+      const double y1 = f.y + f.h;
+      // Filled rect: horizontal scan lines every 1.5 px (cheap and exact in color).
+      for (double y = y0; y < y1; y += 1.5)
+      {
+        const double yy = std::min(y + 0.75, y1);
+        EmitSegment(lines, ON_2dPoint(f.x, yy), ON_2dPoint(f.x + f.w, yy), kUiDepth, kUiDepth, f.rgba);
+      }
+      if (f.border_px > 0.0f && f.border_rgba[3] > 0.0f)
+      {
+        const float* bc = f.border_rgba;
+        for (float t = 0.0f; t < f.border_px; t += 1.0f)
+        {
+          EmitSegment(lines, ON_2dPoint(f.x + t, f.y + t), ON_2dPoint(f.x + f.w - t, f.y + t), kUiDepth, kUiDepth, bc);
+          EmitSegment(lines, ON_2dPoint(f.x + t, f.y + f.h - t), ON_2dPoint(f.x + f.w - t, f.y + f.h - t), kUiDepth, kUiDepth, bc);
+          EmitSegment(lines, ON_2dPoint(f.x + t, f.y + t), ON_2dPoint(f.x + t, f.y + f.h - t), kUiDepth, kUiDepth, bc);
+          EmitSegment(lines, ON_2dPoint(f.x + f.w - t, f.y + t), ON_2dPoint(f.x + f.w - t, f.y + f.h - t), kUiDepth, kUiDepth, bc);
+        }
+      }
+    }
+    for (const TL_GuiLine& l : options.gui.lines)
+    {
+      const int passes = (l.px > 2.5f) ? 3 : (l.px > 1.5f ? 2 : 1);
+      for (int k = 0; k < passes; ++k)
+      {
+        const double o = (double)k * 0.7 - (double)(passes - 1) * 0.35;
+        EmitSegment(lines, ON_2dPoint(l.x0, l.y0 + o), ON_2dPoint(l.x1, l.y1 + o),
+                    kUiDepth, kUiDepth, l.rgba);
+      }
+    }
+    for (const TL_GuiText& t : options.gui.texts)
+    {
+      EmitLabelDepth(lines, t.text.c_str(), t.x, t.y, t.pixel, t.rgba, kUiDepth);
     }
   }
 

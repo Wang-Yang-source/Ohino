@@ -11,6 +11,8 @@
 
 #include "../tl_export.h"
 
+#include <vector>
+
 /**
  * Exact reverse-engineered reimplementation of:
  *   `bool TL_IsMeshEdgeUnwelded(int edge_index, const ON_Mesh* mesh)`
@@ -125,4 +127,15 @@ TL_FUNCTION int TL_ExtractBrepMesh(
   const ON_Brep& brep,
   ON_Mesh& out_mesh,
   bool append = false
+);
+
+/**
+ * Extract the exact 3D topological edges (`brep.m_E`) of an `ON_Brep` as polylines.
+ * Linear edges emit a 2-point segment; curved edges are sampled at `curved_edge_samples`
+ * stations across their domain.  Returns the number of edge polylines appended.
+ */
+TL_FUNCTION int TL_ExtractBrepEdgePolylines(
+  const ON_Brep& brep,
+  std::vector<std::vector<ON_3dPoint>>& out_polylines,
+  int curved_edge_samples = 12
 );

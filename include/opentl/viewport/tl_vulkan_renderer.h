@@ -51,8 +51,45 @@ struct TL_CatppuccinMochaTheme
   static constexpr float kLavender[4] = { 0.706f, 0.745f, 0.996f, 1.0f }; // #b4befe (Active border / HUD)
 };
 
+/**
+ * Screen-space GUI overlay primitives. Drawn after all 3D geometry at the near
+ * depth plane, so they compose a UI on top of the four-view render without
+ * touching the 3D pipelines.
+ */
+struct TL_GuiFill
+{
+  float x = 0.0f, y = 0.0f, w = 0.0f, h = 0.0f;
+  float rgba[4] = { 0.118f, 0.118f, 0.180f, 1.0f };
+  float border_rgba[4] = { 0.192f, 0.196f, 0.267f, 1.0f };
+  float border_px = 1.0f;
+};
+
+struct TL_GuiText
+{
+  float x = 0.0f, y = 0.0f;
+  float pixel = 1.5f;
+  float rgba[4] = { 0.804f, 0.839f, 0.957f, 1.0f };
+  std::string text;
+};
+
+struct TL_GuiLine
+{
+  float x0 = 0.0f, y0 = 0.0f, x1 = 0.0f, y1 = 0.0f;
+  float px = 1.0f;
+  float rgba[4] = { 0.345f, 0.357f, 0.439f, 1.0f };
+};
+
+struct TL_GuiOverlay
+{
+  bool enabled = false;
+  std::vector<TL_GuiFill> fills;
+  std::vector<TL_GuiLine> lines;
+  std::vector<TL_GuiText> texts;
+};
+
 struct TL_VulkanRenderOptions
 {
+  TL_GuiOverlay gui;               ///< Optional Rhino 9 style studio UI overlay
   int sample_count = 4;            ///< MSAA samples (4 = 4x MSAA, 1 = off)
   bool enable_depth = true;        ///< 32-bit float depth buffer (`D32_SFLOAT`)
   bool enable_shaded_meshes = true;///< Render shaded triangle meshes alongside wireframes
