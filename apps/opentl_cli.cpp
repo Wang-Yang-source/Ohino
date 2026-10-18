@@ -618,6 +618,12 @@ int RunVulkanRender(const std::string& out_dir, bool use_demo_scene, int* exit_c
     if (nullptr != swept && swept->IsValid()) {
       ON_Mesh* mesh = TL_MeshSurfaceGrid(*swept, 72, 128, nullptr);
       if (nullptr != mesh) {
+        // Close the open ends so the tube reads as a solid and backface culling is safe.
+        int cap_triangles = 0;
+        int open_chains = 0;
+        const int caps = TL_CapMeshOpenBoundaryLoops(*mesh, &cap_triangles, &open_chains);
+        std::printf("vulkan.mesh_caps=%d cap_triangles=%d open_chains=%d boundary_edges=%d\n",
+                    caps, cap_triangles, open_chains, TL_CountMeshBoundaryEdges(*mesh));
         mesh->ComputeFaceNormals();
         mesh->ComputeVertexNormals();
         owned_meshes.push_back(mesh);
@@ -645,6 +651,7 @@ int RunVulkanRender(const std::string& out_dir, bool use_demo_scene, int* exit_c
   options.sample_count = 4;
   options.enable_depth = true;
   options.enable_shaded_meshes = true;
+  options.cull_backfaces = true;
   const bool rendered = renderer.RenderScene(document, layout, result, meshes, options);
 
   std::printf("vulkan.backend=%s\n", result.backend_name.c_str());

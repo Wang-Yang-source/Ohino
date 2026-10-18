@@ -56,6 +56,7 @@ struct TL_VulkanRenderOptions
   int sample_count = 4;            ///< MSAA samples (4 = 4x MSAA, 1 = off)
   bool enable_depth = true;        ///< 32-bit float depth buffer (`D32_SFLOAT`)
   bool enable_shaded_meshes = true;///< Render shaded triangle meshes alongside wireframes
+  bool cull_backfaces = true;      ///< CULL_MODE_BACK for closed meshes (see TL_CapMeshOpenBoundaryLoops)
 };
 
 struct TL_VulkanRenderResult

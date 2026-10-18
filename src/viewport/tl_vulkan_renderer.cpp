@@ -653,6 +653,9 @@ void AppendMeshTriangles(const ON_Mesh& mesh, const TL_Viewport& vp, const Viewp
         continue;
 
       const bool have_vertex_normals = (mesh.m_N.Count() == mesh.VertexCount());
+      // Decide the facing once for the whole triangle: flipping per vertex makes two
+      // corners disagree and shows up as a diagonal shading seam across the quad.
+      const bool flip = (ON_DotProduct(face_normal, vp.m_camera_dir) > 0.0);
 
       for (int k = 0; k < 3; ++k)
       {
@@ -670,7 +673,7 @@ void AppendMeshTriangles(const ON_Mesh& mesh, const TL_Viewport& vp, const Viewp
         }
 
         // Keep the lighting two-sided so the inside of an open surface is not black.
-        if (ON_DotProduct(normal, vp.m_camera_dir) > 0.0)
+        if (flip)
           normal = -normal;
 
         out.push_back({ { static_cast<float>(s[k].x), static_cast<float>(s[k].y),
@@ -1344,7 +1347,7 @@ bool TL_VulkanFourViewRenderer::RenderScene(
     VkPipelineRasterizationStateCreateInfo raster{};
     raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
     raster.polygonMode = VK_POLYGON_MODE_FILL;
-    raster.cullMode = VK_CULL_MODE_NONE;
+    raster.cullMode = options.cull_backfaces ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE;
     raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     raster.lineWidth = 1.0f;
 
@@ -1398,7 +1401,7 @@ bool TL_VulkanFourViewRenderer::RenderScene(
     VkPipelineRasterizationStateCreateInfo raster{};
     raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
     raster.polygonMode = VK_POLYGON_MODE_FILL;
-    raster.cullMode = VK_CULL_MODE_NONE;
+    raster.cullMode = options.cull_backfaces ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE;
     raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     raster.lineWidth = 1.0f;
 

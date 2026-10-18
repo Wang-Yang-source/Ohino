@@ -2046,6 +2046,113 @@ void TestVulkanRenderer() {
   EndSection();
 }
 
+
+// ---------------------------------------------------------------------------
+// 17. Mesh boundary detection & capping
+// ---------------------------------------------------------------------------
+namespace {
+
+double SignedMeshVolume(const ON_Mesh& mesh)
+{
+  double volume = 0.0;
+  for (int i = 0; i < mesh.m_F.Count(); ++i)
+  {
+    const ON_MeshFace& face = mesh.m_F[i];
+    const ON_3dPoint& a = mesh.m_V[face.vi[0]];
+    const ON_3dPoint& b = mesh.m_V[face.vi[1]];
+    const ON_3dPoint& c = mesh.m_V[face.vi[2]];
+    auto triple = [](const ON_3dPoint& p, const ON_3dPoint& q, const ON_3dPoint& r) {
+      return p.x * (q.y * r.z - q.z * r.y) + p.y * (q.z * r.x - q.x * r.z) +
+             p.z * (q.x * r.y - q.y * r.x);
+    };
+    volume += triple(a, b, c);
+    if (face.IsQuad())
+      volume += triple(a, c, mesh.m_V[face.vi[3]]);
+  }
+  return volume / 6.0;
+}
+
+} // anonymous namespace
+
+void TestMeshCapping()
+{
+  BeginSection("mesh boundary detection and capping");
+
+  // A swept half-torus: two open rims, no caps.
+  ON_ArcCurve rail(ON_Arc(ON_Plane(ON_3dPoint(-6.0, -6.0, 0.0), ON_3dVector::ZAxis), 9.0, ON_PI));
+  ON_ArcCurve profile(ON_Circle(ON_Plane::World_xy, 1.6));
+  ON_NurbsSurface* swept = TL_Sweep1Rail(rail, profile, 20, nullptr);
+  CHECK(nullptr != swept);
+  if (nullptr == swept) { EndSection(); return; }
+
+  ON_Mesh open_mesh;
+  CHECK(TL_MeshSurfaceGrid(*swept, 48, 96, &open_mesh));
+  delete swept;
+
+  const int boundary_before = TL_CountMeshBoundaryEdges(open_mesh);
+  CHECK_MSG(boundary_before > 0, "an open swept shell must report boundary edges");
+  CHECK_EQ_INT(boundary_before % 2, 0);   // two rims of equal length
+  CHECK_EQ_INT(open_mesh.m_F.Count(), 48 * 96);
+
+  const double analytic_volume = ON_PI * 1.6 * 1.6 * (ON_PI * 9.0);
+
+  // ---- watertight variant (welded rim) ---------------------------------
+  {
+    ON_Mesh welded(open_mesh);
+    int triangles = 0;
+    int open_chains = -1;
+    const int caps = TL_CapMeshOpenBoundaryLoops(welded, &triangles, &open_chains,
+                                                 /*hard_crease=*/false);
+    CHECK_EQ_INT(caps, 2);
+    CHECK_EQ_INT(open_chains, 0);
+    CHECK_EQ_INT(triangles, boundary_before);   // one fan triangle per rim edge
+    CHECK_EQ_INT(TL_CountMeshBoundaryEdges(welded), 0);
+    CHECK_EQ_INT(welded.m_F.Count(), open_mesh.m_F.Count() + triangles);
+
+    const double volume = SignedMeshVolume(welded);
+    CHECK_MSG(volume > 0.0, "capped mesh has negative volume: caps are wound inside out");
+    CHECK_NEAR(volume, analytic_volume, analytic_volume * 0.02);
+
+    // Capping a closed mesh is a no-op.
+    int again = 0;
+    CHECK_EQ_INT(TL_CapMeshOpenBoundaryLoops(welded, &again, nullptr, false), 0);
+    CHECK_EQ_INT(again, 0);
+  }
+
+  // ---- hard-crease variant (rim normals split for shading) ---------------
+  {
+    ON_Mesh creased(open_mesh);
+    int triangles = 0;
+    const int caps = TL_CapMeshOpenBoundaryLoops(creased, &triangles, nullptr, true);
+    CHECK_EQ_INT(caps, 2);
+    CHECK_EQ_INT(triangles, boundary_before);
+    CHECK_MSG(creased.VertexCount() > open_mesh.VertexCount(),
+              "hard crease must duplicate the rim vertices and add a centroid per cap");
+    CHECK_EQ_INT(creased.VertexCount() - open_mesh.VertexCount(), boundary_before + 2);
+    // Positions are unchanged, so the shell is still geometrically closed.
+    CHECK_NEAR(SignedMeshVolume(creased), analytic_volume, analytic_volume * 0.02);
+  }
+
+  // ---- a closed box mesh needs no caps ----------------------------------
+  {
+    ON_Mesh box;
+    const ON_3dPoint corners[8] = {
+      ON_3dPoint(-1, -1, -1), ON_3dPoint(1, -1, -1), ON_3dPoint(1, 1, -1), ON_3dPoint(-1, 1, -1),
+      ON_3dPoint(-1, -1, 1), ON_3dPoint(1, -1, 1), ON_3dPoint(1, 1, 1), ON_3dPoint(-1, 1, 1) };
+    for (int i = 0; i < 8; ++i)
+      box.SetVertex(i, corners[i]);
+    const int quads[6][4] = { { 0, 3, 2, 1 }, { 4, 5, 6, 7 }, { 0, 1, 5, 4 },
+                              { 2, 3, 7, 6 }, { 0, 4, 7, 3 }, { 1, 2, 6, 5 } };
+    for (int i = 0; i < 6; ++i)
+      box.SetQuad(i, quads[i][0], quads[i][1], quads[i][2], quads[i][3]);
+
+    CHECK_EQ_INT(TL_CountMeshBoundaryEdges(box), 0);
+    CHECK_EQ_INT(TL_CapMeshOpenBoundaryLoops(box, nullptr, nullptr, true), 0);
+    CHECK_NEAR(SignedMeshVolume(box), 8.0, 1e-9);
+  }
+
+  EndSection();
+}
 int main() {
   ON::Begin();
 
@@ -2068,6 +2175,7 @@ int main() {
   TestFourViewLayout();
   TestSweep1Rail();
   TestVulkanRenderer();
+  TestMeshCapping();
 
   std::printf("\n=====================\n");
   std::printf("sections=%d checks=%d failures=%d failed_sections=%d\n", g_state.section_index,

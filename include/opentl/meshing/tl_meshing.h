@@ -48,3 +48,38 @@ TL_FUNCTION ON_Mesh* TL_MeshSurfaceGrid(
   int v_divisions,
   ON_Mesh* result_mesh = nullptr
 );
+
+/**
+ * Count topological edges used by exactly one face (the mesh boundary).
+ * A welded, closed mesh returns 0; an open surface shell returns the rim length.
+ */
+TL_FUNCTION int TL_CountMeshBoundaryEdges(const ON_Mesh& mesh);
+
+/**
+ * Cap every closed boundary loop of an open mesh with a triangle fan.
+ *
+ * Procedure:
+ *   1. `ON_Mesh::Topology()`; edges with `m_topf_count == 1` form the boundary.
+ *   2. Boundary edges are chained through shared topological vertices into loops.
+ *      Loops that do not close (open rims, non-manifold junctions) are skipped and
+ *      reported through `out_open_chains`.
+ *   3. Each loop is oriented so the cap faces the same way as the adjacent face at its
+ *      first boundary edge (the cap must not turn the shell inside out).
+ *   4. The loop centroid becomes one new vertex and the loop is fanned into
+ *      `n` triangles.
+ *
+ * Returns the number of loops capped.  `out_triangles` (optional) receives the number
+ * of triangles appended.  The mesh is recomputed (`ComputeFaceNormals`) before return.
+ *
+ * `hard_crease` (default true) duplicates the rim vertices for the cap instead of
+ * reusing the shell's: shared rim vertices would average the cap's plane normal with the
+ * wall's radial normal, shading a 90 degree rim as a soft dome.  The duplicates sit on
+ * identical positions, so `ON_MeshTopology` still welds them and the mesh stays
+ * watertight; only the vertex normals split.
+ *
+ * Reference-product note: `tl.dll` has no exported capping entry point that the static
+ * evidence covers, so this is an independent implementation, not a replay.
+ */
+TL_FUNCTION int TL_CapMeshOpenBoundaryLoops(ON_Mesh& mesh, int* out_triangles = nullptr,
+                                            int* out_open_chains = nullptr,
+                                            bool hard_crease = true);
