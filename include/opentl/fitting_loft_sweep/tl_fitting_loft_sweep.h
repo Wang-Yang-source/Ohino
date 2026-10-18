@@ -84,3 +84,27 @@ TL_FUNCTION ON_NurbsSurface* TL_Sweep1Rail(
   int station_count = 16,
   ON_NurbsSurface* result = nullptr
 );
+
+/**
+ * Two-rail sweep: transport and proportionally scale `profile` between `rail1` and `rail2`,
+ * then skin the resulting station curves via `TL_LoftCurves`.
+ */
+TL_FUNCTION ON_NurbsSurface* TL_Sweep2Rails(
+  const ON_Curve& rail1,
+  const ON_Curve& rail2,
+  const ON_Curve& profile,
+  int station_count = 24,
+  ON_NurbsSurface* result = nullptr
+);
+
+/**
+ * Offset a curve in a reference plane by `distance` using normal sampling + cubic NURBS
+ * Greville interpolation.
+ */
+TL_FUNCTION ON_NurbsCurve* TL_OffsetCurve(
+  const ON_Curve& curve,
+  const ON_Plane& plane,
+  double distance,
+  int sample_count = 48,
+  ON_NurbsCurve* result = nullptr
+);

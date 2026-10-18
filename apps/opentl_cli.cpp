@@ -597,7 +597,8 @@ int RunFourViewDemo(const std::string& out_dir, int* exit_code) {
 
 int RunVulkanRender(const std::string& out_dir, bool use_demo_scene,
                     const std::string& input_3dm_path, int* exit_code,
-                    bool gui_mode = false, const std::string& input_gh_path = std::string()) {
+                    bool gui_mode = false, const std::string& input_gh_path = std::string(),
+                    bool interactive_window = false, int max_frames = 0) {
   opentl::mvp::SceneDocument document;
   std::vector<ON_Mesh*> owned_meshes;
   std::vector<const ON_Mesh*> meshes;
@@ -930,6 +931,19 @@ int RunVulkanRender(const std::string& out_dir, bool use_demo_scene,
   else
     options.mesh_colors = { kColorMauve, kColorTeal };
 
+  if (interactive_window) {
+    std::string win_err;
+    const bool win_ok = TL_RunInteractiveStudioWindow(
+      document, meshes, options.mesh_colors, have_gh ? &gh_document : nullptr, max_frames, &win_err);
+    std::printf("gui.window=%s frames=%d\n", win_ok ? "ok" : "failed", max_frames);
+    if (!win_ok) std::printf("gui.window_error=%s\n", win_err.c_str());
+    TL_FreeSSXBranches(ssx_branches);
+    for (ON_Mesh* mesh : owned_meshes) delete mesh;
+    delete swept;
+    if (nullptr != exit_code) *exit_code = win_ok ? 0 : 1;
+    return win_ok ? 0 : 1;
+  }
+
   TL_GuiOverlay overlay;
   if (gui_mode) {
     TL_GuiStudioInfo info;
@@ -937,6 +951,10 @@ int RunVulkanRender(const std::string& out_dir, bool use_demo_scene,
     info.command = "COMMAND: _GRASSHOPPER _OPEN " + (have_gh ? gh_document.DocumentName() : std::string("(NONE)"));
     info.object_count = document.Objects().size();
     info.mesh_count = meshes.size();
+    info.layout = &layout;
+    info.show_gumball = true;
+    info.gumball_origin = bbox.IsValid() ? bbox.Center() : ON_3dPoint::Origin;
+    info.gumball_radius = bbox.IsValid() ? std::max(4.0, bbox.Diagonal().Length() * 0.12) : 12.0;
     if (have_gh) {
       char gbuf[160];
       std::snprintf(gbuf, sizeof(gbuf), "%zu NODES   %zu WIRES   %zu SLIDERS   %d BAKED",
@@ -1001,8 +1019,9 @@ void PrintUsage() {
   std::printf("  opentl_cli --views [--out-dir <dir>]     four-view layout demo (Top/Persp/Front/Right)\n");
   std::printf("  opentl_cli --render-vulkan [--scene demo] [--input-3dm <file.3dm>] [--out-dir <dir>]\n");
   std::printf("  opentl_cli --render-gui [--input-3dm <file.3dm>] [--input-gh <file.gh>] [--out-dir <dir>]\n");
-  std::printf("             Rhino 9 style studio workbench: 4 viewports + Grasshopper canvas\n");
-  std::printf("                                           render four views offline with Vulkan -> fourview.png\n");
+  std::printf("             Rhino 9 style studio workbench: 4 viewports + Grasshopper canvas -> studio.png\n");
+  std::printf("  opentl_cli --gui [--input-3dm <file.3dm>] [--input-gh <file.gh>] [--max-frames <N>]\n");
+  std::printf("             launch interactive SDL3 + Vulkan desktop studio window\n");
 }
 
 }  // namespace
@@ -1016,6 +1035,7 @@ int main(int argc, char** argv) {
   std::string input_3dm_path;
   std::string scene_mode = "demo";
   std::string input_gh_path;
+  int max_frames = 0;
 
   for (int i = 1; i < argc; ++i) {
     const std::string arg = (nullptr != argv[i]) ? argv[i] : "";
@@ -1050,6 +1070,15 @@ int main(int argc, char** argv) {
       mode = "render-vulkan";
     } else if ("--render-gui" == arg) {
       mode = "render-gui";
+    } else if ("--gui" == arg) {
+      mode = "gui";
+    } else if ("--max-frames" == arg) {
+      if (i + 1 >= argc) {
+        std::printf("error: --max-frames requires an integer argument\n");
+        PrintUsage();
+        return 2;
+      }
+      max_frames = std::atoi(argv[++i]);
     } else if ("--input-gh" == arg) {
       if (i + 1 >= argc) {
         std::printf("error: --input-gh requires a .gh/.ghx file argument\n");
@@ -1083,10 +1112,11 @@ int main(int argc, char** argv) {
 
   std::printf("opentl_cli mode=%s\n", mode.c_str());
 
-  if ("render-vulkan" == mode || "render-gui" == mode) {
+  if ("render-vulkan" == mode || "render-gui" == mode || "gui" == mode) {
     int code = 0;
     RunVulkanRender(out_dir, scene_mode != "minimal", input_3dm_path, &code,
-                    "render-gui" == mode, input_gh_path);
+                    "render-gui" == mode || "gui" == mode, input_gh_path,
+                    "gui" == mode, max_frames);
     ON::End();
     return code;
   }

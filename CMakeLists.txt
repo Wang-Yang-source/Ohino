@@ -29,6 +29,11 @@ set(OPENTL_SOURCES
 
 # Optional Vulkan backend for the four-view renderer (MoltenVK on macOS, native on Win/Linux).
 find_package(Vulkan QUIET)
+find_package(SDL3 QUIET)
+if(NOT SDL3_FOUND)
+  find_path(SDL3_INCLUDE_DIR SDL3/SDL.h HINTS /opt/homebrew/include /usr/local/include)
+  find_library(SDL3_LIBRARY NAMES SDL3 HINTS /opt/homebrew/lib /usr/local/lib)
+endif()
 
 add_library(opentl STATIC ${OPENTL_SOURCES})
 target_include_directories(opentl PUBLIC
@@ -44,6 +49,16 @@ if(Vulkan_FOUND)
 else()
   message(STATUS "OpenTL: Vulkan not found -> four-view renderer built without a backend")
 endif()
+if(SDL3_FOUND)
+  target_compile_definitions(opentl PUBLIC OPENTL_HAS_SDL3=1)
+  target_link_libraries(opentl PUBLIC SDL3::SDL3)
+  message(STATUS "OpenTL: SDL3 found via CMake config -> interactive studio window enabled")
+elseif(SDL3_INCLUDE_DIR AND SDL3_LIBRARY)
+  target_compile_definitions(opentl PUBLIC OPENTL_HAS_SDL3=1)
+  target_include_directories(opentl PUBLIC "${SDL3_INCLUDE_DIR}")
+  target_link_libraries(opentl PUBLIC "${SDL3_LIBRARY}")
+  message(STATUS "OpenTL: SDL3 found (${SDL3_LIBRARY}) -> interactive studio window enabled")
+endif()
 
 add_library(opentl_shared SHARED ${OPENTL_SOURCES})
 target_include_directories(opentl_shared PUBLIC
@@ -55,6 +70,14 @@ if(Vulkan_FOUND)
   target_compile_definitions(opentl_shared PRIVATE OPENTL_HAS_VULKAN=1)
   target_include_directories(opentl_shared PRIVATE ${Vulkan_INCLUDE_DIRS})
   target_link_libraries(opentl_shared PUBLIC ${Vulkan_LIBRARIES})
+endif()
+if(SDL3_FOUND)
+  target_compile_definitions(opentl_shared PUBLIC OPENTL_HAS_SDL3=1)
+  target_link_libraries(opentl_shared PUBLIC SDL3::SDL3)
+elseif(SDL3_INCLUDE_DIR AND SDL3_LIBRARY)
+  target_compile_definitions(opentl_shared PUBLIC OPENTL_HAS_SDL3=1)
+  target_include_directories(opentl_shared PUBLIC "${SDL3_INCLUDE_DIR}")
+  target_link_libraries(opentl_shared PUBLIC "${SDL3_LIBRARY}")
 endif()
 
 enable_testing()

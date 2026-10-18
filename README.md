@@ -52,19 +52,22 @@ Ohino parses the real Grasshopper archive format rather than re-implementing a l
   `GH_Types` items (`bool`, `int32/64`, `float/double`, `Guid`, `string`, `byte[]`, `double[]`,
   `GH_Point3D`, `GH_Interval1D`, `GH_Line`, `GH_BoundingBox`, `GH_Plane`, …).
 * **`.ghx`** — the XML flavour of the same tree (chunk / items / item).
-* **`.ghz`** — Grasshopper 2 ZIP container (detected; extract the inner definition to load it).
+* **`.ghz`** — Grasshopper 2 ZIP container: extracted in-memory via local file headers + raw deflate,
+  supporting both nested `.gh`/`.ghx` definitions and GH2 Pear binary `Document.root` archives
+  (such as `CircleRadius.ghz`).
 * Extracted per object: component GUID, instance GUID, canvas `Bounds`/`Pivot`, input/output ports
   (both the `param_input`/`param_output` layout and the variable-parameter
   `ParameterData → InputParam/OutputParam` layout), `Source` wires, `PersistentData` branches,
-  `Number Slider` ranges/values, `Panel` text, `Scribble` notes and `Group` membership.
+  `Number Slider` ranges/values, `Panel` text, `Scribble` notes and dynamic `Group` membership boxes.
 * Solved components include `Number Slider`, `Point`, `Construct Point`, `Deconstruct`, `Distance`,
-  `Line`, `Line SDL`, `Circle`, `Circle 3Pt`, `Arc`, `Nurbs Curve`, `Interpolate`, `Divide Curve`,
-  `Curve Closest Point`, `Offset Curve`, `Bounding Box`, `Box Corners`, `XY Plane`, `Plane Offset`,
-  `Addition`, `Subtraction`, `Multiplication`, `Division`, `Average`, `Range`, `Bounds`,
-  `Remap Numbers`, `Expression`, `Format`, `Loft`, `Sweep1`, `SubD Box`, `Mesh Plane`,
-  `Brep | Line`, `Custom Preview` — all evaluated by the Ohino kernel, not by a mock.
+  `Line`, `Line SDL`, `Circle`, `Circle Radius`, `Circle 3Pt`, `Arc`, `Nurbs Curve`, `Interpolate`,
+  `Divide Curve`, `Curve Closest Point`, `Offset Curve` (`TL_OffsetCurve`), `Poisson Distribution`,
+  `Bounding Box`, `Box Corners`, `XY Plane`, `Plane Offset`, `Addition`, `Subtraction`,
+  `Multiplication`, `Division`, `Average`, `Range`, `Bounds`, `Remap Numbers`, `Expression`,
+  `Format`, `Loft`, `Sweep1` (`TL_Sweep1Rail`), `Sweep2` (`TL_Sweep2Rails`), `SubD Box`,
+  `Mesh Plane`, `Brep | Line`, `Custom Preview` — all evaluated by the Ohino kernel, not by a mock.
 
-All eight definitions shipped with Rhino 9 WIP (`00`–`07`) load byte-exactly and solve:
+All eight definitions shipped with Rhino 9 WIP (`00`–`07`) plus the GH2 `CircleRadius.ghz` example load and solve:
 
 ```
 00 From Rhino To Grasshopper     8 nodes   0 sliders   1 baked
@@ -74,7 +77,8 @@ All eight definitions shipped with Rhino 9 WIP (`00`–`07`) load byte-exactly a
 04 Polynomial Graphing          20 nodes   4 sliders   1 baked
 05 Measure and Display Values   24 nodes   0 sliders  60 baked
 06 Adaptive Pattern             29 nodes   0 sliders  33 baked
-07 Column Arcade                34 nodes   3 sliders  23 baked   22 wires
+07 Column Arcade                34 nodes   3 sliders  54 baked   22 wires
+CircleRadius.ghz (GH2)           4 nodes   1 slider   56 baked    2 wires
 ```
 
 ---
@@ -87,15 +91,15 @@ Ohino
 │   ├── mvp/          scene document, transforms, distances, JSON + .3dm I/O
 │   ├── intersect/    curve×curve (2 solvers), surface×surface marching + periodic NURBS fit
 │   ├── closest_point/ curve/surface closest-point Newton solvers
-│   ├── fitting_loft_sweep/  deformable arc/circle, loft, 1-rail sweep
+│   ├── fitting_loft_sweep/  deformable arc/circle, offset curve, loft, 1-rail & 2-rail sweep
 │   ├── meshing/      surface gridding, unwelded-edge detection, boundary capping, Brep→mesh
 │   ├── booleans/     winding numbers, planar slicing, mesh CSG
 │   ├── subd/         SubD box + SubD→mesh
 │   ├── viewport/     4-view cameras/projection/picking + Vulkan 1.2 renderer
-│   ├── gh/           Grasshopper archive reader + DAG solver  (new)
-│   └── gui/          Rhino 9 studio layout + draw list         (new)
-├── apps/opentl_cli   demo, inspect, four-view, Vulkan render, studio GUI render
-├── tests/            20 sections, 2808 checks
+│   ├── gh/           Grasshopper (.gh/.ghx/.ghz) archive reader + DAG solver
+│   └── gui/          Rhino 9 studio layout + 3D Gumball/OSnap + SDL3 interactive window
+├── apps/opentl_cli   demo, inspect, four-view, Vulkan render, studio GUI render & interactive window
+├── tests/            20 sections, 2827 checks
 ├── docs/             PRD_RHINO9_GH_AND_GUI.md, TODO.md
 └── assets/           logo + screenshots
 ```
@@ -139,11 +143,16 @@ ctest --test-dir build --output-on-failure     # 5/5 tests
 # Vulkan four-view render (1600x900)
 ./build/opentl_cli --render-vulkan --scene demo --out-dir /tmp/out
 
-# Rhino 9 style studio workbench, 1920x1080, with .3dm + Grasshopper
+# Rhino 9 style studio workbench, 1920x1080, with .3dm + Grasshopper (headless PNG)
 ./build/opentl_cli --render-gui \
   --input-3dm model.3dm \
   --input-gh "07 Column Arcade.gh" \
   --out-dir /tmp/out        # writes studio.png
+
+# Interactive SDL3 + Vulkan desktop studio window (Orbit/Pan/Zoom + live GH slider drag)
+./build/opentl_cli --gui \
+  --input-3dm model.3dm \
+  --input-gh "07 Column Arcade.gh"
 
 # Inspect archives
 ./build/opentl_cli --inspect-3dm model.3dm
@@ -176,12 +185,12 @@ TL_ApplyStudioViewports(layout, rects);        // 4 views inside the workbench
 
 | Check | Result |
 | --- | --- |
-| `opentl_tests` | **20 sections, 2808 checks, 0 failures** |
+| `opentl_tests` | **20 sections, 2827 checks, 0 failures** |
 | `ctest` | **5/5 passed** (`opentl_tests`, cli demo/views/vulkan/gui) |
-| `.gh` fixtures | 8/8 Rhino 9 WIP tutorials parse byte-exactly, 22 wires solved in `07` |
-| Slider re-solve | `Segments` 15 → 30 changes downstream Divide Curve output |
-| Studio render | 1920×1080 PNG, `Vulkan 1.2.357` / `Apple M4`, 4× MSAA, `D32_SFLOAT`, 69 534 line vertices, 1 319 876 triangles |
-| `.3dm` model | 383 objects, 309 Breps, 241 620 faces, four consistent viewports |
+| `.gh` / `.ghz` fixtures | 8/8 Rhino 9 WIP `.gh` tutorials + GH2 `CircleRadius.ghz` parse & solve (`07` bakes 54 objects, `CircleRadius.ghz` bakes 56 objects) |
+| Slider re-solve | `Segments` 15 → 30 and GH2 `Radius` 10 → 18 update downstream geometry |
+| Studio render & SDL3 GUI | 1920×1080 PNG + SDL3 interactive window, `Vulkan 1.2.357` / `Apple M4`, 4× MSAA, `D32_SFLOAT`, 72 964 line vertices, 1 319 876 triangles |
+| `.3dm` model | 383 objects, 309 Breps, 241 620 faces, four consistent viewports with 3D Gumball + `CEN` OSnap |
 
 ---
 
@@ -194,8 +203,8 @@ TL_ApplyStudioViewports(layout, rects);        // 4 views inside the workbench
   splitting, so results are watertight meshes rather than trimmed Breps.
 * Grasshopper coverage is the component set listed above. Definition *editing* (adding/removing
   components, dragging wires) is not implemented — sliders and persistent data are editable.
-* `.ghz` (Grasshopper 2 ZIP) is detected but not opened; internalised geometry stored as
-  `ON_Data` blobs is decoded only when the buffer is a plain `ON_Object` archive.
+* `.ghz` (Grasshopper 2 ZIP + Pear `Document.root`) is unpacked and solved in-memory; internalised
+  geometry stored as `ON_Data` blobs is decoded when the buffer is a plain `ON_Object` archive.
 * The interactive window mode shares the same layout/draw list as the headless renderer; mouse
   camera navigation and slider dragging are wired through `TL_Viewport` and the GH document, but
   the desktop event loop is deliberately thin compared with Rhino's command system.

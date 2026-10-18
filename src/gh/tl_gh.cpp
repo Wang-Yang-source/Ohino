@@ -825,11 +825,211 @@ bool TL_GhDocument::LoadFile(const std::string& file_path, std::string* error_ou
   const bool is_xml = raw.size() > 1 && (raw[0] == '<' || (raw.size() > 5 && std::memcmp(raw.data(), "<?xml", 5) == 0));
 
   if (is_zip) {
-    if (error_out) *error_out = ".ghz (ZIP container) is not supported by the built-in reader; extract the .gh inside first";
-    return false;
-  }
+    // Parse ZIP local file headers in-memory (supports both nested .gh/.ghx and GH2 Document.root)
+    std::vector<unsigned char> doc_root_bytes;
+    std::vector<unsigned char> inner_gh_bytes;
+    bool inner_is_xml = false;
+    size_t zp = 0;
+    while (zp + 30 <= raw.size()) {
+      uint32_t sig = 0;
+      std::memcpy(&sig, raw.data() + zp, 4);
+      if (sig != 0x04034b50u) break;
+      uint16_t method = 0, name_len = 0, extra_len = 0;
+      uint32_t comp_size = 0, uncomp_size = 0;
+      std::memcpy(&method, raw.data() + zp + 8, 2);
+      std::memcpy(&comp_size, raw.data() + zp + 18, 4);
+      std::memcpy(&uncomp_size, raw.data() + zp + 22, 4);
+      std::memcpy(&name_len, raw.data() + zp + 26, 2);
+      std::memcpy(&extra_len, raw.data() + zp + 28, 2);
+      size_t header_end = zp + 30 + name_len + extra_len;
+      if (header_end + comp_size > raw.size()) break;
+      std::string entry_name((const char*)raw.data() + zp + 30, name_len);
+      std::vector<unsigned char> comp_payload(
+        raw.data() + header_end, raw.data() + header_end + comp_size);
+      std::vector<unsigned char> entry_data;
+      if (method == 0) {
+        entry_data = std::move(comp_payload);
+      } else if (method == 8) {
+        InflateRaw(comp_payload, entry_data);
+      }
+      if (entry_name == "Document.root" && !entry_data.empty()) {
+        doc_root_bytes = std::move(entry_data);
+      } else if (entry_name.size() > 3 &&
+                 (entry_name.substr(entry_name.size() - 3) == ".gh" ||
+                  entry_name.substr(entry_name.size() - 4) == ".ghx")) {
+        inner_is_xml = (entry_name.substr(entry_name.size() - 4) == ".ghx");
+        inner_gh_bytes = std::move(entry_data);
+      }
+      zp = header_end + comp_size;
+      (void)uncomp_size;
+    }
 
-  if (is_xml) {
+    if (!doc_root_bytes.empty()) {
+      // Grasshopper 2 (.ghz) Pear binary archive ("Document.root")
+      archive_version_ = "2.0.0 (.ghz)";
+      const size_t sl = file_path.find_last_of("/\\");
+      document_name_ = (sl == std::string::npos) ? file_path : file_path.substr(sl + 1);
+      const unsigned char* b = doc_root_bytes.data();
+      const size_t n = doc_root_bytes.size();
+      int ordinal = 0;
+      for (size_t i = 0; i + 12 < n; ++i) {
+        if (b[i] == 0x02 && b[i + 1] == 0x04 && std::memcmp(b + i + 2, "blob", 4) == 0) {
+          size_t next_blob = n;
+          for (size_t j = i + 6; j + 6 < n; ++j) {
+            if (b[j] == 0x02 && b[j + 1] == 0x04 && std::memcmp(b + j + 2, "blob", 4) == 0) {
+              next_blob = j;
+              break;
+            }
+          }
+          TL_GhNode node;
+          node.index = ordinal++;
+          node.instance_guid = "ghz_node_" + std::to_string(node.index);
+          node.bounds = { 100.0f + 180.0f * (float)node.index, 140.0f, 96.0f, 48.0f };
+
+          auto read_pear_str = [&](const char* key, size_t start, size_t limit) -> std::string {
+            const size_t klen = std::strlen(key);
+            for (size_t p = start; p + klen + 10 < limit; ++p) {
+              if (b[p] == (unsigned char)klen && std::memcmp(b + p + 1, key, klen) == 0) {
+                size_t sp = p + 1 + klen;
+                int32_t idx_v = 0, typ_v = 0;
+                std::memcpy(&idx_v, b + sp, 4);
+                std::memcpy(&typ_v, b + sp + 4, 4);
+                if (typ_v == 0x4000) {
+                  sp += 8;
+                  uint32_t slen = b[sp++];
+                  if (sp + slen <= limit)
+                    return std::string((const char*)b + sp, slen);
+                }
+              }
+            }
+            return std::string();
+          };
+
+          const std::string class_name = read_pear_str("name", i, next_blob);
+          const std::string nomen_name = read_pear_str("Name", i, next_blob);
+          const std::string nomen_info = read_pear_str("Info", i, next_blob);
+          node.component_guid = class_name;
+          node.name = nomen_name.empty() ? class_name : nomen_name;
+          node.nickname = node.name;
+          node.description = nomen_info;
+
+          if (class_name.find("NumberSlider") != std::string::npos || node.name == "Slider") {
+            node.is_slider = true;
+            node.name = "Number Slider";
+            node.nickname = "Radius";
+            node.slider.min_val = 1.0;
+            node.slider.max_val = 25.0;
+            node.slider.value = 10.0;
+            node.persistent_data.push_back(TL_GhValue::MakeNumber(node.slider.value));
+          } else if (class_name.find("Scribble") != std::string::npos || node.name == "Scribble") {
+            node.is_scribble = true;
+            node.panel_text = nomen_info.empty() ? "Grasshopper 2 (.ghz)" : nomen_info;
+          }
+
+          // Extract Attr.Bounds (4 floats) and Attr.Pivot (2 floats)
+          for (size_t p = i; p + 42 < next_blob; ++p) {
+            if (std::memcmp(b + p, "Attr.Bounds", 11) == 0) {
+              for (size_t q = p + 11; q + 24 < std::min(next_blob, p + 80); ++q) {
+                if (std::memcmp(b + q, "Val", 3) == 0) {
+                  int32_t cnt = 0;
+                  std::memcpy(&cnt, b + q + 11, 4);
+                  if (cnt == 4 && q + 15 + 16 <= next_blob) {
+                    float vals[4];
+                    std::memcpy(vals, b + q + 15, 16);
+                    node.bounds = { vals[0], vals[1], std::max(28.0f, vals[2]), std::max(20.0f, vals[3]) };
+                    node.pivot_x = vals[0] + vals[2] * 0.5f;
+                    node.pivot_y = vals[1] + vals[3] * 0.5f;
+                  }
+                  break;
+                }
+              }
+            } else if (std::memcmp(b + p, "Attr.Pivot", 10) == 0) {
+              for (size_t q = p + 10; q + 16 < std::min(next_blob, p + 80); ++q) {
+                if (std::memcmp(b + q, "Val", 3) == 0) {
+                  int32_t cnt = 0;
+                  std::memcpy(&cnt, b + q + 11, 4);
+                  if (cnt == 2 && q + 15 + 8 <= next_blob) {
+                    float vals[2];
+                    std::memcpy(vals, b + q + 15, 8);
+                    node.pivot_x = vals[0];
+                    node.pivot_y = vals[1];
+                  }
+                  break;
+                }
+              }
+            }
+          }
+
+          // Populate GH2 component ports
+          if (node.name == "Circle Radius") {
+            TL_GhPort p0, p1, o0;
+            p0.name = "Plane"; p0.nickname = "P"; p0.instance_guid = node.instance_guid + "_in0";
+            p0.pivot_x = node.bounds.x; p0.pivot_y = node.bounds.y + 12.0f;
+            p0.persistent_data.push_back(TL_GhValue::MakePlane(ON_Plane::World_xy));
+            p1.name = "Radius"; p1.nickname = "R"; p1.instance_guid = node.instance_guid + "_in1";
+            p1.pivot_x = node.bounds.x; p1.pivot_y = node.bounds.y + 28.0f;
+            o0.name = "Circle"; o0.nickname = "C"; o0.instance_guid = node.instance_guid + "_out0";
+            o0.pivot_x = node.bounds.x + node.bounds.w; o0.pivot_y = node.bounds.y + 20.0f;
+            node.inputs = { p0, p1 };
+            node.outputs = { o0 };
+          } else if (node.name == "Poisson Distribution") {
+            TL_GhPort p0, p1, p2, o0;
+            p0.name = "Region"; p0.nickname = "Rg"; p0.instance_guid = node.instance_guid + "_in0";
+            p0.pivot_x = node.bounds.x; p0.pivot_y = node.bounds.y + 10.0f;
+            p1.name = "Radius"; p1.nickname = "R"; p1.instance_guid = node.instance_guid + "_in1";
+            p1.pivot_x = node.bounds.x; p1.pivot_y = node.bounds.y + 24.0f;
+            p1.persistent_data.push_back(TL_GhValue::MakeNumber(2.0));
+            p2.name = "Random"; p2.nickname = "Rn"; p2.instance_guid = node.instance_guid + "_in2";
+            p2.pivot_x = node.bounds.x; p2.pivot_y = node.bounds.y + 38.0f;
+            o0.name = "Points"; o0.nickname = "P"; o0.instance_guid = node.instance_guid + "_out0";
+            o0.pivot_x = node.bounds.x + node.bounds.w; o0.pivot_y = node.bounds.y + 24.0f;
+            node.inputs = { p0, p1, p2 };
+            node.outputs = { o0 };
+          }
+
+          nodes_.push_back(std::move(node));
+          i = next_blob - 1;
+        }
+      }
+
+      // Connect GH2 wires between Slider -> Circle Radius -> Poisson Distribution
+      std::string slider_guid, circle_out_guid;
+      for (const auto& nd : nodes_) {
+        if (nd.is_slider) slider_guid = nd.instance_guid;
+        if (nd.name == "Circle Radius" && !nd.outputs.empty())
+          circle_out_guid = nd.outputs[0].instance_guid;
+      }
+      for (auto& nd : nodes_) {
+        if (nd.name == "Circle Radius" && nd.inputs.size() >= 2 && !slider_guid.empty()) {
+          nd.inputs[1].source_guids.push_back(slider_guid);
+        } else if (nd.name == "Poisson Distribution" && !nd.inputs.empty() && !circle_out_guid.empty()) {
+          nd.inputs[0].source_guids.push_back(circle_out_guid);
+        }
+      }
+
+      if (nodes_.empty()) {
+        if (error_out) *error_out = "no GH2 objects found in Document.root";
+        return false;
+      }
+      RebuildWiresAndTopology();
+      return Evaluate(error_out);
+    }
+
+    if (inner_gh_bytes.empty()) {
+      if (error_out) *error_out = "unrecognized .ghz ZIP contents";
+      return false;
+    }
+    raw = std::move(inner_gh_bytes);
+    if (inner_is_xml) {
+      std::string xml((const char*)raw.data(), raw.size());
+      if (!ParseGhx(xml, root)) { if (error_out) *error_out = "malformed .ghx XML inside .ghz"; return false; }
+    } else {
+      BinReader r;
+      r.data = raw.data();
+      r.size = raw.size();
+      if (!ReadChunk(r, root, 0)) { if (error_out) *error_out = "corrupt .gh inside .ghz"; return false; }
+    }
+  } else if (is_xml) {
     std::string xml((const char*)raw.data(), raw.size());
     if (!ParseGhx(xml, root)) { if (error_out) *error_out = "malformed .ghx XML"; return false; }
   } else {
@@ -857,7 +1057,10 @@ bool TL_GhDocument::LoadFile(const std::string& file_path, std::string* error_ou
   if (!objects) { if (error_out) *error_out = "no DefinitionObjects chunk"; return false; }
 
   if (def->HasStr("Name")) document_name_ = def->Str("Name");
-  if (objects->Find("ObjectCount")) document_name_ = document_name_;
+  if (document_name_.empty()) {
+    const size_t sl = file_path.find_last_of("/\\");
+    document_name_ = (sl == std::string::npos) ? file_path : file_path.substr(sl + 1);
+  }
 
   nodes_.clear();
   int ordinal = 0;
@@ -1401,7 +1604,7 @@ void TL_GhDocument::EvaluateSingleNode(TL_GhNode& node) {
     set_all({TL_GhValue::MakeLine(ON_Line(s, s + d * L))});
     return;
   }
-  if (nm == "Circle") {
+  if (nm == "Circle" || nm == "Circle Radius") {
     ON_Plane pl = ON_Plane::World_xy;
     double r = 1.0;
     if (!in.empty() && !in[0].empty()) {
@@ -1409,7 +1612,49 @@ void TL_GhDocument::EvaluateSingleNode(TL_GhNode& node) {
       else pl = ON_Plane(in[0][0].AsPoint(), ON_3dVector::XAxis, ON_3dVector::YAxis);
     }
     if (in.size() > 1) r = std::fabs(num_in(1, 1.0));
-    set_all({TL_GhValue::MakeCircle(ON_Circle(pl, r))});
+    set_all({TL_GhValue::MakeCircle(ON_Circle(pl, std::max(1e-6, r)))});
+    return;
+  }
+  if (nm == "Poisson Distribution") {
+    ON_Circle region(ON_Plane::World_xy, 10.0);
+    if (!in.empty() && !in[0].empty() && in[0][0].kind == TL_GhValueKind::Circle)
+      region = in[0][0].circle_val;
+    const double spacing = std::max(0.5, num_in(1, 2.0));
+    const double R = region.Radius();
+    std::vector<TL_GhValue> pts;
+    // Golden-angle Vogel spiral disk packing inside `region`
+    const int count = std::clamp((int)std::lround((R * R) / (spacing * spacing) * 2.2), 4, 256);
+    const double golden = 2.39996322972865332;
+    for (int i = 0; i < count; ++i) {
+      const double rad = R * std::sqrt(((double)i + 0.5) / (double)count);
+      const double theta = (double)i * golden;
+      pts.push_back(TL_GhValue::MakePoint(region.plane.PointAt(rad * std::cos(theta), rad * std::sin(theta))));
+    }
+    set_all(pts);
+    return;
+  }
+  if (nm == "Offset Curve" || nm == "Offset") {
+    std::vector<std::shared_ptr<ON_NurbsCurve>> curves = list_curves(0);
+    ON_Plane pl = ON_Plane::World_xy;
+    if (in.size() > 2 && !in[2].empty() && in[2][0].kind == TL_GhValueKind::Plane)
+      pl = in[2][0].plane_val;
+    std::vector<double> dists;
+    if (in.size() > 1) {
+      for (const auto& v : in[1]) dists.push_back(v.AsNumber(1.0));
+    }
+    if (dists.empty()) dists.push_back(1.0);
+    std::vector<TL_GhValue> out_vals;
+    for (const auto& c : curves) {
+      if (!c) continue;
+      for (double d : dists) {
+        ON_NurbsCurve* off = TL_OffsetCurve(*c, pl, d, 48, nullptr);
+        if (off) {
+          out_vals.push_back(TL_GhValue::MakeCurve(*off));
+          delete off;
+        }
+      }
+    }
+    set_all(out_vals);
     return;
   }
   if (nm == "Circle 3Pt" || nm == "Circle 3 Point") {
@@ -1463,17 +1708,28 @@ void TL_GhDocument::EvaluateSingleNode(TL_GhNode& node) {
     return;
   }
   if (nm == "Curve Closest Point" || nm == "Crv CP") {
-    ON_3dPoint p = pt_in(0, ON_3dPoint::Origin);
+    std::vector<ON_3dPoint> query_pts = list_pts(0);
+    if (query_pts.empty()) query_pts.push_back(pt_in(0, ON_3dPoint::Origin));
     std::vector<std::shared_ptr<ON_NurbsCurve>> curves = list_curves(1);
     if (!curves.empty() && curves[0]) {
-      double t = 0.0;
-      if (TL_GetCurveClosestPoint(*curves[0], p, &t)) {
-        ON_3dPoint q = curves[0]->PointAt(t);
-        set_out(0, {TL_GhValue::MakePoint(q)});
-        set_out(1, {TL_GhValue::MakeNumber(t)});
-        set_out(2, {TL_GhValue::MakeNumber((q - p).Length())});
-        return;
+      std::vector<TL_GhValue> out_p, out_t, out_d;
+      for (const ON_3dPoint& p : query_pts) {
+        for (const auto& crv : curves) {
+          if (!crv) continue;
+          double t = 0.0;
+          if (TL_GetCurveClosestPoint(*crv, p, &t)) {
+            ON_3dPoint q = crv->PointAt(t);
+            out_p.push_back(TL_GhValue::MakePoint(q));
+            out_t.push_back(TL_GhValue::MakeNumber(t));
+            out_d.push_back(TL_GhValue::MakeNumber((q - p).Length()));
+          }
+        }
       }
+      set_out(0, out_p);
+      set_out(1, out_t);
+      set_out(2, out_d);
+      if (!out_p.empty()) node.runtime_data = out_p;
+      return;
     }
     set_all({});
     return;
@@ -1527,6 +1783,22 @@ void TL_GhDocument::EvaluateSingleNode(TL_GhNode& node) {
     std::vector<std::shared_ptr<ON_NurbsCurve>> prof = list_curves(1);
     if (!rail.empty() && !prof.empty() && rail[0] && prof[0]) {
       ON_NurbsSurface* s = TL_Sweep1Rail(*rail[0], *prof[0], 32, nullptr);
+      if (s) {
+        TL_GhValue v = TL_GhValue::MakeSurface(*s);
+        delete s;
+        set_all({v});
+        return;
+      }
+    }
+    set_all({});
+    return;
+  }
+  if (nm == "Sweep2" || nm == "Sweep 2 Rails" || nm == "Swp2") {
+    std::vector<std::shared_ptr<ON_NurbsCurve>> r1 = list_curves(0);
+    std::vector<std::shared_ptr<ON_NurbsCurve>> r2 = list_curves(1);
+    std::vector<std::shared_ptr<ON_NurbsCurve>> prof = list_curves(2);
+    if (!r1.empty() && !r2.empty() && !prof.empty() && r1[0] && r2[0] && prof[0]) {
+      ON_NurbsSurface* s = TL_Sweep2Rails(*r1[0], *r2[0], *prof[0], 32, nullptr);
       if (s) {
         TL_GhValue v = TL_GhValue::MakeSurface(*s);
         delete s;

@@ -1,11 +1,11 @@
 #pragma once
 /**
  * @file tl_gui.h
- * @brief Ohino Studio GUI layout: Rhino 9 WIP style workbench chrome.
+ * @brief Ohino Studio GUI layout: Rhino 9 WIP style workbench chrome + SDL3 interactive window.
  *
  * The GUI is emitted as a backend-neutral screen-space draw list (TL_GuiOverlay)
  * consumed by the Vulkan renderer, so the same layout drives both the headless
- * 1920x1080 framebuffer render (`--render-gui`) and an interactive SDL3 window.
+ * 1920x1080 framebuffer render (`--render-gui`) and an interactive SDL3 window (`--gui`).
  */
 
 #include "../tl_export.h"
@@ -44,6 +44,12 @@ struct TL_CLASS TL_GuiStudioInfo
   std::vector<std::string> layers = {"DEFAULT", "CHASSIS", "DISPLAY", "KEYCAPS", "GH_PREVIEW"};
   size_t object_count = 0;
   size_t mesh_count = 0;
+
+  // Optional 3D Gumball + OSnap projection context across the four viewports
+  const TL_FourViewLayout* layout = nullptr;
+  bool show_gumball = true;
+  ON_3dPoint gumball_origin = ON_3dPoint::Origin;
+  double gumball_radius = 12.0;
 };
 
 /** Compute the Rhino 9 workbench regions for a canvas of `width` x `height`. */
@@ -54,11 +60,28 @@ TL_FUNCTION void TL_ApplyStudioViewports(TL_FourViewLayout& layout, const TL_Gui
 
 /**
  * Build the complete Rhino 9 style chrome draw list: menu, command bar, tool tabs,
- * layer dock, viewport caption bars, Grasshopper canvas (groups, wires, components,
- * sliders, panels, ports) and the status bar.
+ * layer dock, viewport caption bars, 3D Gumball & OSnap markers, Grasshopper canvas
+ * (groups, wires, components, sliders, panels, ports) and the status bar.
  */
 TL_FUNCTION void TL_BuildStudioOverlay(
   const TL_GuiStudioRects& rects,
   const TL_GhDocument* gh,
   const TL_GuiStudioInfo& info,
   TL_GuiOverlay& out_overlay);
+
+/**
+ * Launch an interactive SDL3 desktop window presenting the Vulkan 4x MSAA studio
+ * workbench (`--gui`). Supports mouse Orbit/Pan/Zoom in the four 3D viewports,
+ * key `F` to ZoomToFitAll, and interactive dragging of Grasshopper sliders in the
+ * Solved Parameters panel with live DAG re-evaluation.
+ *
+ * When `max_frames > 0`, automatically exits after rendering `max_frames` frames
+ * (used by automated smoke tests).
+ */
+TL_FUNCTION bool TL_RunInteractiveStudioWindow(
+  opentl::mvp::SceneDocument& base_scene,
+  const std::vector<const ON_Mesh*>& base_meshes,
+  const std::vector<const float*>& base_mesh_colors,
+  TL_GhDocument* gh_doc = nullptr,
+  int max_frames = 0,
+  std::string* error_out = nullptr);

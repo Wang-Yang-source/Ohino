@@ -518,3 +518,197 @@ TL_FUNCTION ON_NurbsSurface* TL_Sweep1Rail(
 
   return surface;
 }
+
+// ============================================================================
+// TL_Sweep2Rails -- two-rail proportional sweep + loft skinning
+// ============================================================================
+
+TL_FUNCTION ON_NurbsSurface* TL_Sweep2Rails(
+  const ON_Curve& rail1,
+  const ON_Curve& rail2,
+  const ON_Curve& profile,
+  int station_count,
+  ON_NurbsSurface* result
+)
+{
+  const ON_Interval dom1 = rail1.Domain();
+  const ON_Interval dom2 = rail2.Domain();
+  const ON_Interval pdom = profile.Domain();
+  if (!dom1.IsIncreasing() || !dom2.IsIncreasing() || !pdom.IsIncreasing())
+    return nullptr;
+
+  const int stations = std::clamp(station_count, 2, 256);
+  constexpr int kProfileSamples = 64;
+
+  const ON_3dPoint r1_0 = rail1.PointAtStart();
+  const ON_3dPoint r2_0 = rail2.PointAtStart();
+  const double base_span = std::max(1e-6, (r2_0 - r1_0).Length());
+
+  ON_3dVector x0 = r2_0 - r1_0;
+  if (!x0.Unitize())
+    x0 = ON_3dVector::XAxis;
+  ON_3dPoint dummy = ON_3dPoint::Origin;
+  ON_3dVector t0 = ON_3dVector::ZeroVector;
+  if (!rail1.Ev1Der(dom1.Min(), dummy, t0) || !t0.Unitize())
+    t0 = ON_3dVector::YAxis;
+  ON_3dVector y0 = ON_CrossProduct(t0, x0);
+  if (!y0.Unitize())
+    y0 = ON_3dVector::ZAxis;
+
+  // Record profile coordinates relative to the initial two-rail frame at station 0.
+  std::vector<ON_2dPoint> local_uv(static_cast<size_t>(kProfileSamples) + 1);
+  for (int k = 0; k <= kProfileSamples; ++k)
+  {
+    const double s = static_cast<double>(k) / static_cast<double>(kProfileSamples);
+    const ON_3dPoint p = profile.PointAt(pdom.ParameterAt(s));
+    const ON_3dVector rel = p - r1_0;
+    // If profile lies in XY plane near origin rather than attached to rail1, use p.x/p.y directly.
+    if ((profile.PointAtStart() - r1_0).Length() > base_span * 2.5 &&
+        std::fabs(p.z) < 1e-6)
+    {
+      local_uv[static_cast<size_t>(k)] = ON_2dPoint(p.x / base_span, p.y / base_span);
+    }
+    else
+    {
+      local_uv[static_cast<size_t>(k)] = ON_2dPoint(
+        ON_DotProduct(rel, x0) / base_span,
+        ON_DotProduct(rel, y0) / base_span
+      );
+    }
+  }
+
+  ON_SimpleArray<ON_Curve*> owned;
+  ON_SimpleArray<const ON_Curve*> sections;
+  ON_3dVector prev_y = y0;
+
+  for (int i = 0; i < stations; ++i)
+  {
+    const double s = static_cast<double>(i) / static_cast<double>(stations - 1);
+    const double u1 = dom1.ParameterAt(s);
+    const double u2 = dom2.ParameterAt(s);
+    const ON_3dPoint p1 = rail1.PointAt(u1);
+    const ON_3dPoint p2 = rail2.PointAt(u2);
+    const ON_3dVector span_vec = p2 - p1;
+    const double span = std::max(1e-6, span_vec.Length());
+    ON_3dVector x_axis = span_vec / span;
+
+    ON_3dPoint ev1 = ON_3dPoint::Origin, ev2 = ON_3dPoint::Origin;
+    ON_3dVector tan1 = ON_3dVector::ZeroVector, tan2 = ON_3dVector::ZeroVector;
+    rail1.Ev1Der(u1, ev1, tan1);
+    rail2.Ev1Der(u2, ev2, tan2);
+    ON_3dVector tangent = tan1 + tan2;
+    if (!tangent.Unitize())
+      tangent = t0;
+
+    ON_3dVector y_axis = ON_CrossProduct(tangent, x_axis);
+    if (!y_axis.Unitize())
+      y_axis = prev_y;
+    if (ON_DotProduct(y_axis, prev_y) < 0.0)
+      y_axis = -y_axis;
+    prev_y = y_axis;
+
+    ON_SimpleArray<ON_3dPoint> pts(static_cast<int>(local_uv.size()));
+    for (const ON_2dPoint& uv : local_uv)
+      pts.Append(p1 + x_axis * (uv.x * span) + y_axis * (uv.y * span));
+
+    ON_PolylineCurve* sec = new ON_PolylineCurve(pts);
+    owned.Append(sec);
+    sections.Append(sec);
+  }
+
+  ON_NurbsSurface* srf = nullptr;
+  if (sections.Count() >= 2)
+    srf = TL_LoftCurves(sections, result);
+  for (int i = 0; i < owned.Count(); ++i)
+    delete owned[i];
+  return srf;
+}
+
+// ============================================================================
+// TL_OffsetCurve -- planar normal offset + cubic Greville NURBS interpolation
+// ============================================================================
+
+TL_FUNCTION ON_NurbsCurve* TL_OffsetCurve(
+  const ON_Curve& curve,
+  const ON_Plane& plane,
+  double distance,
+  int sample_count,
+  ON_NurbsCurve* result
+)
+{
+  const ON_Interval dom = curve.Domain();
+  if (!dom.IsIncreasing())
+    return nullptr;
+
+  ON_3dVector plane_n = plane.zaxis;
+  if (!plane_n.Unitize())
+    plane_n = ON_3dVector::ZAxis;
+
+  const int cv_count = std::clamp(sample_count, 4, 256);
+  const int deg = std::clamp(curve.Degree(), 1, 3);
+  const int order = deg + 1;
+
+  ON_NurbsCurve* out = (nullptr != result) ? result : ON_NurbsCurve::New();
+  if (!out->Create(3, false, order, cv_count))
+  {
+    if (nullptr == result)
+      delete out;
+    return nullptr;
+  }
+  out->MakeClampedUniformKnotVector(1.0);
+  out->SetDomain(dom.Min(), dom.Max());
+
+  std::vector<double> grev(static_cast<size_t>(cv_count), 0.0);
+  if (!out->GetGrevilleAbcissae(grev.data()))
+  {
+    for (int i = 0; i < cv_count; ++i)
+      grev[static_cast<size_t>(i)] = dom.ParameterAt(static_cast<double>(i) / static_cast<double>(cv_count - 1));
+  }
+
+  std::vector<ON_3dPoint> rhs(static_cast<size_t>(cv_count), ON_3dPoint::Origin);
+  ON_3dVector last_n(1.0, 0.0, 0.0);
+  for (int i = 0; i < cv_count; ++i)
+  {
+    const double t = std::clamp(grev[static_cast<size_t>(i)], dom.Min(), dom.Max());
+    ON_3dPoint p = ON_3dPoint::Origin;
+    ON_3dVector tan = ON_3dVector::ZeroVector;
+    if (!curve.Ev1Der(t, p, tan) || !tan.Unitize())
+    {
+      p = curve.PointAt(t);
+      rhs[static_cast<size_t>(i)] = p + last_n * distance;
+      continue;
+    }
+    ON_3dVector n = ON_CrossProduct(tan, plane_n);
+    if (!n.Unitize())
+      n = last_n;
+    last_n = n;
+    rhs[static_cast<size_t>(i)] = p + n * distance;
+  }
+
+  // Normalize basis evaluation to [0, 1]
+  ON_NurbsCurve basis(3, false, order, cv_count);
+  basis.MakeClampedUniformKnotVector(1.0);
+  basis.SetDomain(0.0, 1.0);
+  std::vector<double> grev01(static_cast<size_t>(cv_count), 0.0);
+  if (!basis.GetGrevilleAbcissae(grev01.data()))
+  {
+    for (int i = 0; i < cv_count; ++i)
+      grev01[static_cast<size_t>(i)] = static_cast<double>(i) / static_cast<double>(cv_count - 1);
+  }
+  std::vector<double> A(static_cast<size_t>(cv_count * cv_count), 0.0);
+  std::vector<double> row;
+  for (int i = 0; i < cv_count; ++i)
+  {
+    EvaluateClampedCurveBasisRow(basis, grev01[static_cast<size_t>(i)], row);
+    for (int j = 0; j < cv_count; ++j)
+      A[static_cast<size_t>(i * cv_count + j)] = row[static_cast<size_t>(j)];
+  }
+
+  std::vector<ON_3dPoint> cvs;
+  if (!SolveLinearSystem3d(cv_count, A, rhs, cvs))
+    cvs = rhs;
+  for (int i = 0; i < cv_count; ++i)
+    out->SetCV(i, cvs[static_cast<size_t>(i)]);
+
+  return out;
+}

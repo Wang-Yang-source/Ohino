@@ -2753,13 +2753,81 @@ void TestGrasshopperAndStudioGui() {
       std::string error;
       if (doc.LoadFile(path, &error)) {
         const TL_GuiStudioRects rects = TL_ComputeStudioRects(1920, 1080);
+        TL_FourViewLayout layout = TL_FourViewLayout::Default(1920, 1080);
+        TL_ApplyStudioViewports(layout, rects);
         TL_GuiOverlay overlay;
         TL_GuiStudioInfo info;
+        info.layout = &layout;
+        info.show_gumball = true;
+        info.gumball_origin = ON_3dPoint::Origin;
+        info.gumball_radius = 8.0;
         TL_BuildStudioOverlay(rects, &doc, info, overlay);
-        CHECK(overlay.lines.size() > doc.Wires().size());   // wires + slider tracks
-        CHECK(overlay.fills.size() > 100);                  // nodes + ports + chrome
+        CHECK(overlay.lines.size() > doc.Wires().size());   // wires + slider tracks + Gumball arms
+        CHECK(overlay.fills.size() > 100);                  // nodes + ports + groups + chrome
         CHECK(overlay.texts.size() > 40);
+        bool has_cen = false, has_shaded = false;
+        for (const auto& t : overlay.texts) {
+          if (t.text == "CEN") has_cen = true;
+          if (t.text == "SHADED") has_shaded = true;
+        }
+        CHECK(has_cen);
+        CHECK(has_shaded);
       }
+    }
+  }
+
+  // ---- 5. Grasshopper 2 (.ghz ZIP + Pear Document.root) in-memory loading & solve
+  {
+    const std::string ghz_path =
+      "/Users/waya/Projects/Rhino/Rhino 9 WIP/Plug-ins/Grasshopper2/Documentation/English/Example Files/CircleRadius.ghz";
+    std::ifstream probe(ghz_path, std::ios::binary);
+    if (probe.good()) {
+      probe.close();
+      TL_GhDocument gh2;
+      std::string err;
+      CHECK(gh2.LoadFile(ghz_path, &err));
+      CHECK_EQ_INT((int)gh2.Nodes().size(), 4);
+      CHECK_EQ_INT((int)gh2.SliderCount(), 1);
+      CHECK(gh2.Wires().size() >= 2);
+      opentl::mvp::SceneDocument baked;
+      std::vector<ON_Mesh*> meshes;
+      const int baked_n = gh2.BakeToScene(baked, meshes);
+      CHECK(baked_n > 10);
+      CHECK(gh2.SetSliderValueByOrdinal(0, 18.0));
+      opentl::mvp::SceneDocument baked2;
+      const int baked_n2 = gh2.BakeToScene(baked2, meshes);
+      CHECK(baked_n2 > baked_n);
+      for (ON_Mesh* m : meshes) delete m;
+    }
+  }
+
+  // ---- 6. TL_OffsetCurve & TL_Sweep2Rails kernel verification
+  {
+    ON_LineCurve base_line(ON_3dPoint(0.0, 0.0, 0.0), ON_3dPoint(10.0, 0.0, 0.0));
+    ON_NurbsCurve* off_crv = TL_OffsetCurve(base_line, ON_Plane::World_xy, 2.5, 16, nullptr);
+    CHECK(nullptr != off_crv);
+    if (nullptr != off_crv) {
+      CHECK(off_crv->IsValid());
+      const ON_3dPoint mid = off_crv->PointAt(off_crv->Domain().Mid());
+      CHECK_NEAR(mid.x, 5.0, 1e-3);
+      CHECK_NEAR(std::fabs(mid.y), 2.5, 1e-4);
+      CHECK_NEAR(mid.z, 0.0, 1e-6);
+      delete off_crv;
+    }
+
+    ON_LineCurve rail1(ON_3dPoint(0.0, 0.0, 0.0), ON_3dPoint(0.0, 10.0, 0.0));
+    ON_LineCurve rail2(ON_3dPoint(4.0, 0.0, 0.0), ON_3dPoint(8.0, 10.0, 0.0));
+    ON_LineCurve prof(ON_3dPoint(0.0, 0.0, 0.0), ON_3dPoint(4.0, 0.0, 2.0));
+    ON_NurbsSurface* swp2 = TL_Sweep2Rails(rail1, rail2, prof, 16, nullptr);
+    CHECK(nullptr != swp2);
+    if (nullptr != swp2) {
+      CHECK(swp2->IsValid());
+      // At V=1 (end of rails), span doubled from 4 to 8 so Z height also scales from 2 to 4
+      const ON_3dPoint end_tip = swp2->PointAt(swp2->Domain(0).Max(), swp2->Domain(1).Max());
+      CHECK_NEAR(end_tip.x, 8.0, 1e-2);
+      CHECK_NEAR(end_tip.y, 10.0, 1e-2);
+      CHECK_NEAR(end_tip.z, 4.0, 1e-2);
+      delete swp2;
     }
   }
 
