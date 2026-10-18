@@ -591,12 +591,66 @@ int RunFourViewDemo(const std::string& out_dir, int* exit_code) {
   return (saved && identical) ? 0 : 1;
 }
 
+// ---------------------------------------------------------------------------
+// --render-vulkan : Vulkan four-view render to PNG
+// ---------------------------------------------------------------------------
+
+int RunVulkanRender(const std::string& out_dir, bool use_demo_scene, int* exit_code) {
+  opentl::mvp::SceneDocument document;
+  if (use_demo_scene) {
+    DemoScene scene;
+    BuildDemoScene(scene);
+    document = scene.document;
+  } else {
+    document.AddLayer("Curves", 90, 200, 255, true);
+    document.AddCircle(ON_Circle(ON_Plane::World_xy, 5.0), "circle", "Curves");
+    document.AddPoint(ON_3dPoint(2.0, 3.0, 4.0), "point", "Curves");
+  }
+
+  TL_FourViewLayout layout = TL_FourViewLayout::Default(1600, 900);
+  const ON_BoundingBox bbox = document.GetSceneBoundingBox();
+  if (bbox.IsValid())
+    layout.ZoomToFitAll(bbox, 0.9);
+
+  TL_VulkanFourViewRenderer renderer;
+  TL_VulkanRenderResult result;
+  const bool rendered = renderer.RenderScene(document, layout, result);
+
+  std::printf("vulkan.backend=%s\n", result.backend_name.c_str());
+  std::printf("vulkan.device=%s\n", result.device_name.c_str());
+  std::printf("vulkan.canvas=%dx%d vertices=%zu\n", result.width, result.height,
+              result.vertex_count);
+  std::printf("vulkan.render=%s\n", rendered ? "ok" : "failed");
+  if (!rendered) {
+    std::printf("vulkan.error=%s\n", result.error.c_str());
+    std::printf("vulkan.status=FAILED\n");
+    if (nullptr != exit_code) *exit_code = 1;
+    return 1;
+  }
+
+  std::error_code ec;
+  std::filesystem::create_directories(out_dir, ec);
+  const std::string path = (std::filesystem::path(out_dir) / "fourview.png").string();
+  std::string save_error;
+  const bool saved = TL_VulkanFourViewRenderer::SavePng(path, result.width, result.height,
+                                                        result.rgba, &save_error);
+  std::printf("vulkan.png=%s path=%s bytes=%zu\n", saved ? "ok" : "failed", path.c_str(),
+              result.rgba.size());
+  if (!saved)
+    std::printf("vulkan.png_error=%s\n", save_error.c_str());
+  std::printf("vulkan.status=%s\n", saved ? "OK" : "FAILED");
+  if (nullptr != exit_code) *exit_code = saved ? 0 : 1;
+  return saved ? 0 : 1;
+}
+
 void PrintUsage() {
   std::printf("usage:\n");
   std::printf("  opentl_cli [--demo] [--out-dir <dir>]     run the deterministic MVP demo\n");
   std::printf("  opentl_cli --inspect-3dm <file.3dm>       summarize a .3dm archive\n");
   std::printf("  opentl_cli --inspect-json <file.json>     summarize an .otscene.json file\n");
   std::printf("  opentl_cli --views [--out-dir <dir>]     four-view layout demo (Top/Persp/Front/Right)\n");
+  std::printf("  opentl_cli --render-vulkan [--scene demo] [--out-dir <dir>]\n");
+  std::printf("                                           render four views offline with Vulkan -> fourview.png\n");
 }
 
 }  // namespace
@@ -607,6 +661,7 @@ int main(int argc, char** argv) {
   std::string mode = "demo";
   std::string out_dir = ".";
   std::string inspect_path;
+  std::string scene_mode = "demo";
 
   for (int i = 1; i < argc; ++i) {
     const std::string arg = (nullptr != argv[i]) ? argv[i] : "";
@@ -637,6 +692,15 @@ int main(int argc, char** argv) {
       inspect_path = argv[++i];
     } else if ("--views" == arg) {
       mode = "views";
+    } else if ("--render-vulkan" == arg) {
+      mode = "render-vulkan";
+    } else if ("--scene" == arg) {
+      if (i + 1 >= argc) {
+        std::printf("error: --scene requires 'demo' or 'minimal'\n");
+        PrintUsage();
+        return 2;
+      }
+      scene_mode = argv[++i];
     } else if ("--help" == arg || "-h" == arg) {
       PrintUsage();
       return 0;
@@ -648,6 +712,13 @@ int main(int argc, char** argv) {
   }
 
   std::printf("opentl_cli mode=%s\n", mode.c_str());
+
+  if ("render-vulkan" == mode) {
+    int code = 0;
+    RunVulkanRender(out_dir, scene_mode != "minimal", &code);
+    ON::End();
+    return code;
+  }
 
   if ("views" == mode) {
     int code = 0;

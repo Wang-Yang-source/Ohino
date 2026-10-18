@@ -484,6 +484,29 @@ layout.View(1).ScreenToRay(screen, from, dir);               // 透视拾取射�
 ./opentl/build/opentl_cli --views --out-dir /tmp/opentl_views
 ```
 
+#### Vulkan 渲染后端（`viewport/tl_vulkan_renderer.h`）
+
+四视图的相机/投影是**后端无关**的；渲染层用标准 **Vulkan 1.2**（Khronos 官方 API），
+在 macOS 上由 **MoltenVK** 提供 ICD，在 Windows/Linux 上走原生驱动——同一份代码、同一条管线。
+
+| 条目 | 实现 |
+| --- | --- |
+| 依赖 | `find_package(Vulkan)`；macOS 上 `brew install vulkan-loader molten-vk vulkan-headers shaderc`，找不到 Vulkan 时该文件降级为无后端（返回明确错误，不静默失败） |
+| 目标 | 离屏 `VK_FORMAT_R8G8B8A8_UNORM` 图像 → `vkCmdCopyImageToBuffer` 读回主机内存 |
+| 管线 | 单一 `VK_PRIMITIVE_TOPOLOGY_LINE_LIST` 管线；顶点为「像素坐标 + RGBA」，`push_constant` 传画布尺寸，顶点着色器做 像素→NDC |
+| 着色器 | GLSL 450 → SPIR-V（`glslc`），以 `uint32_t` 数组内嵌，无运行时文件依赖 |
+| 绘制内容 | 每视口独立构造平面网格（Top=XY、Front=XZ、Right=YZ、Perspective=XY）、世界 X/Y/Z 轴（红/绿/蓝）、可见图层颜色的场景几何、视口边框、5×7 位图字体标签（TOP / PERSPECTIVE / FRONT / RIGHT）、原点十字 |
+| 裁剪 | CPU 端 Liang–Barsky 按视口矩形裁剪（Vulkan 只有单一 scissor，不做逐视口裁剪） |
+| 输出 | 内置 PNG 编码器（zlib `compress2` + CRC32，filter=0，RGBA8），无第三方图像库 |
+| macOS 细节 | 实例启用 `VK_KHR_portability_enumeration` + `ENUMERATE_PORTABILITY`，设备在报告时启用 `VK_KHR_portability_subset` |
+
+```bash
+# 1600x900 四视图离屏渲染，输出 fourview.png
+./opentl/build/opentl_cli --render-vulkan --scene demo --out-dir /tmp/opentl_vk
+```
+
+实测：`vulkan.backend=Vulkan 1.2.357`、`vulkan.device=Apple M4`、`vertices=1828`、`fourview.png` 5760000 B（1600×900×4 读回）。
+
 ### 4.5 双格式文件序列化能力
 
 OpenTL 同时提供**两种互补**的持久化格式：一种为零依赖、可逐字节比对的本地格式；一种为与 Rhino 生态互通的工业格式。
@@ -641,9 +664,10 @@ cmake --build build --config Release -j8
 > | 项目 | 结果 |
 > | --- | --- |
 > | clean build（删除 `build/` 后重新配置） | 通过，0 error；`opentl/src`、`apps`、`tests` 0 warning（其余 warning 均来自 openNURBS/zlib 第三方源码） |
-> | `opentl_tests` | 15 个测试组、742 项检查、0 失败 |
-> | `ctest` | 3/3 通过（`opentl_tests`、`opentl_cli_demo`、`opentl_cli_views`） |
+> | `opentl_tests` | 16 个测试组、763 项检查、0 失败 |
+> | `ctest` | 4/4 通过（`opentl_tests`、`opentl_cli_demo`、`opentl_cli_views`、`opentl_cli_vulkan`） |
 > | 四视图布局往返 | `opentl_cli --views` 退出码 0，`views.roundtrip=identical` |
+> | Vulkan 四视图渲染 | `vulkan.device=Apple M4`、`vulkan.backend=Vulkan 1.2.357`、1600×900 PNG 写出成功 |
 > | CLI 端到端演示 | 退出码 0，`io.roundtrip json_digest_identical=1 3dm_digest_identical=1` |
 > | 场景摘要哈希 | `scene_digest=a9b93db0b90a1441`（两次独立运行完全一致） |
 > | `.otscene.json` 确定性 | 两次运行 SHA-256 相同：`8b4831c9c911fbe1d5b5033695ca680b02a21c179ad7b6408cd4f2e835ab519f` |

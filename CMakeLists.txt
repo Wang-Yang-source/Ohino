@@ -22,7 +22,11 @@ set(OPENTL_SOURCES
     src/mvp/intersect_sample.cpp
     src/mvp/scene_io.cpp
     src/viewport/tl_viewport.cpp
+    src/viewport/tl_vulkan_renderer.cpp
 )
+
+# Optional Vulkan backend for the four-view renderer (MoltenVK on macOS, native on Win/Linux).
+find_package(Vulkan QUIET)
 
 add_library(opentl STATIC ${OPENTL_SOURCES})
 target_include_directories(opentl PUBLIC
@@ -30,6 +34,14 @@ target_include_directories(opentl PUBLIC
     "${OPENNURBS_DIR}"
 )
 target_link_libraries(opentl PUBLIC opennurbsStatic pthread dl)
+if(Vulkan_FOUND)
+  target_compile_definitions(opentl PRIVATE OPENTL_HAS_VULKAN=1)
+  target_include_directories(opentl PRIVATE ${Vulkan_INCLUDE_DIRS})
+  target_link_libraries(opentl PUBLIC ${Vulkan_LIBRARIES})
+  message(STATUS "OpenTL: Vulkan found -> four-view renderer enabled (${Vulkan_LIBRARIES})")
+else()
+  message(STATUS "OpenTL: Vulkan not found -> four-view renderer built without a backend")
+endif()
 
 add_library(opentl_shared SHARED ${OPENTL_SOURCES})
 target_include_directories(opentl_shared PUBLIC
@@ -37,6 +49,11 @@ target_include_directories(opentl_shared PUBLIC
     "${OPENNURBS_DIR}"
 )
 target_link_libraries(opentl_shared PUBLIC opennurbsStatic pthread dl)
+if(Vulkan_FOUND)
+  target_compile_definitions(opentl_shared PRIVATE OPENTL_HAS_VULKAN=1)
+  target_include_directories(opentl_shared PRIVATE ${Vulkan_INCLUDE_DIRS})
+  target_link_libraries(opentl_shared PUBLIC ${Vulkan_LIBRARIES})
+endif()
 
 enable_testing()
 add_executable(opentl_tests tests/test_opentl.cpp)
@@ -47,3 +64,4 @@ add_executable(opentl_cli apps/opentl_cli.cpp)
 target_link_libraries(opentl_cli PRIVATE opentl)
 add_test(NAME opentl_cli_demo COMMAND opentl_cli --demo --out-dir "${CMAKE_CURRENT_BINARY_DIR}/demo_out")
 add_test(NAME opentl_cli_views COMMAND opentl_cli --views --out-dir "${CMAKE_CURRENT_BINARY_DIR}/views_out")
+add_test(NAME opentl_cli_vulkan COMMAND opentl_cli --render-vulkan --out-dir "${CMAKE_CURRENT_BINARY_DIR}/vulkan_out")

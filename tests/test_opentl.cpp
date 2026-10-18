@@ -1861,6 +1861,114 @@ void TestSweep1Rail() {
   EndSection();
 }
 
+
+// ============================================================================
+// 16 - Vulkan four-view renderer
+// ============================================================================
+
+void TestVulkanRenderer() {
+  BeginSection("Vulkan four-view offscreen renderer");
+
+  opentl::mvp::SceneDocument document;
+  const int layer = document.AddLayer("Curves", 90, 200, 255, true);
+  CHECK(layer >= 0);
+  document.AddCircle(ON_Circle(ON_Plane::World_xy, 5.0), "circle", "Curves");
+  document.AddLine(ON_Line(ON_3dPoint(-8.0, 0.0, 0.0), ON_3dPoint(8.0, 3.0, 2.0)), "line", "Curves");
+  document.AddPoint(ON_3dPoint(2.0, 3.0, 4.0), "point", "Curves");
+  document.AddNurbsCurveFromPoints(
+    { ON_3dPoint(-6.0, -4.0, 0.0), ON_3dPoint(-2.0, -7.0, 3.0), ON_3dPoint(3.0, -5.0, 1.0),
+      ON_3dPoint(6.0, -2.0, 2.0) },
+    3, "spline", "Curves");
+
+  TL_FourViewLayout layout = TL_FourViewLayout::Default(960, 540);
+  layout.ZoomToFitAll(document.GetSceneBoundingBox(), 0.9);
+
+  TL_VulkanFourViewRenderer renderer;
+  TL_VulkanRenderResult result;
+  const bool ok = renderer.RenderScene(document, layout, result);
+
+  if (!ok && result.error.find("without Vulkan support") != std::string::npos) {
+    std::printf("     [SKIP] build has no Vulkan backend: %s\n", result.error.c_str());
+    EndSection();
+    return;
+  }
+
+  CHECK_MSG(ok, std::string("RenderScene failed: ") + result.error);
+  CHECK_EQ_INT(result.width, 960);
+  CHECK_EQ_INT(result.height, 540);
+  CHECK(result.rgba.size() == static_cast<size_t>(result.width) * result.height * 4);
+  CHECK(result.vertex_count > 0);
+  CHECK(result.device_name.find("llvm") == std::string::npos); // sanity: a real device name
+  CHECK(!result.backend_name.empty());
+
+  if (ok) {
+    // The framebuffer must not be a single flat colour: the grid, the axes and the
+    // geometry all contribute distinct pixels.
+    size_t distinct = 0;
+    for (size_t i = 0; i + 3 < result.rgba.size(); i += 4 * 997) {
+      const uint8_t* p = result.rgba.data() + i;
+      if (p[0] != result.rgba[0] || p[1] != result.rgba[1] || p[2] != result.rgba[2])
+        ++distinct;
+    }
+    CHECK_MSG(distinct > 20, "distinct sampled pixels = " + std::to_string(distinct));
+
+    // The four viewport borders must be present: sample the exact centre column/row
+    // boundaries and look for a non-background pixel near each border coordinate.
+    const size_t border_x = static_cast<size_t>(result.width / 2);
+    bool found_horizontal_border = false;
+    for (int y = 0; y < result.height; ++y) {
+      const size_t index = (static_cast<size_t>(y) * result.width + border_x) * 4;
+      if (index + 2 < result.rgba.size()) {
+        const uint8_t* p = result.rgba.data() + index;
+        if (p[0] > 60 || p[1] > 60 || p[2] > 60)
+          found_horizontal_border = true;
+      }
+    }
+    CHECK_MSG(found_horizontal_border, "viewport content missing in the centre column");
+  }
+
+  // ---- PNG persistence ------------------------------------------------
+  {
+    const std::string path = "/tmp/opentl_test_fourview.png";
+    std::string save_error;
+    if (ok) {
+      const bool saved =
+        TL_VulkanFourViewRenderer::SavePng(path, result.width, result.height, result.rgba, &save_error);
+      CHECK_MSG(saved, "SavePng failed: " + save_error);
+
+      std::FILE* file = std::fopen(path.c_str(), "rb");
+      CHECK(nullptr != file);
+      if (nullptr != file) {
+        uint8_t header[33] = { 0 };
+        const size_t read = std::fread(header, 1, sizeof(header), file);
+        std::fclose(file);
+        CHECK(read == sizeof(header));
+        const uint8_t signature[8] = { 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A };
+        CHECK(0 == std::memcmp(header, signature, 8));
+        CHECK(0 == std::memcmp(header + 12, "IHDR", 4));
+        const uint32_t png_width = (static_cast<uint32_t>(header[16]) << 24) |
+          (static_cast<uint32_t>(header[17]) << 16) | (static_cast<uint32_t>(header[18]) << 8) |
+          static_cast<uint32_t>(header[19]);
+        const uint32_t png_height = (static_cast<uint32_t>(header[20]) << 24) |
+          (static_cast<uint32_t>(header[21]) << 16) | (static_cast<uint32_t>(header[22]) << 8) |
+          static_cast<uint32_t>(header[23]);
+        CHECK_EQ_INT(png_width, static_cast<uint32_t>(result.width));
+        CHECK_EQ_INT(png_height, static_cast<uint32_t>(result.height));
+        CHECK_EQ_INT(header[24], 8); // bit depth
+        CHECK_EQ_INT(header[25], 6); // RGBA
+      }
+      std::remove(path.c_str());
+    }
+
+    // Reject malformed buffers instead of writing a broken file.
+    std::string bad_error;
+    CHECK(!TL_VulkanFourViewRenderer::SavePng(path, 0, 10, std::vector<uint8_t>(), &bad_error));
+    CHECK(!bad_error.empty());
+  }
+
+  EndSection();
+}
+
 int main() {
   ON::Begin();
 
@@ -1882,6 +1990,7 @@ int main() {
   TestStage3Primitives();
   TestFourViewLayout();
   TestSweep1Rail();
+  TestVulkanRenderer();
 
   std::printf("\n=====================\n");
   std::printf("sections=%d checks=%d failures=%d failed_sections=%d\n", g_state.section_index,
