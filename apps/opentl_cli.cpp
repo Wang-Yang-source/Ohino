@@ -631,6 +631,41 @@ int RunVulkanRender(const std::string& out_dir, bool use_demo_scene, int* exit_c
     }
   }
 
+  // Real surface x surface intersection, computed at render time and added to the scene
+  // as yellow polylines: the curve the kernel actually solved, not a decorative circle.
+  std::vector<TL_SurfaceSurfaceIntersectionBranch> ssx_branches;
+  if (nullptr != swept && swept->IsValid()) {
+    ON_NurbsSurface plane_patch(3, false, 2, 2, 2, 2);
+    const ON_Plane plane(ON_3dPoint(0.0, 0.0, 0.0), ON_3dVector::ZAxis);
+    const double half = 22.0;
+    plane_patch.SetCV(0, 0, plane.PointAt(-half, -half));
+    plane_patch.SetCV(0, 1, plane.PointAt(-half, half));
+    plane_patch.SetCV(1, 0, plane.PointAt(half, -half));
+    plane_patch.SetCV(1, 1, plane.PointAt(half, half));
+    plane_patch.SetKnot(0, 0, 0.0);
+    plane_patch.SetKnot(0, 1, 1.0);
+    plane_patch.SetKnot(1, 0, 0.0);
+    plane_patch.SetKnot(1, 1, 1.0);
+
+    const int branch_count = TL_SurfaceSurfaceIntersect(*swept, plane_patch, 1e-7, ssx_branches);
+    if (branch_count > 0) {
+      document.AddLayer("Intersection", 249, 226, 175, true);   // Catppuccin Yellow
+      double worst_error = 0.0;
+      int points_total = 0;
+      for (const auto& branch : ssx_branches) {
+        std::vector<ON_3dPoint> pts;
+        for (int i = 0; i < branch.points_3d.Count(); ++i)
+          pts.push_back(branch.points_3d[i]);
+        if (pts.size() >= 2)
+          document.AddPolyline(pts, "tube_x_plane", "Intersection");
+        worst_error = std::max(worst_error, branch.max_error);
+        points_total += branch.points_3d.Count();
+      }
+      std::printf("vulkan.ssx_branches=%d ssx_points=%d ssx_max_error=%.3e\n", branch_count,
+                  points_total, worst_error);
+    }
+  }
+
   std::vector<const ON_Mesh*> meshes;
   for (const ON_Mesh* mesh : owned_meshes)
     meshes.push_back(mesh);
@@ -660,6 +695,7 @@ int RunVulkanRender(const std::string& out_dir, bool use_demo_scene, int* exit_c
               result.vertex_count, result.triangle_count);
   std::printf("vulkan.theme=%s msaa=%dx depth=%s\n", result.theme_name.c_str(),
               result.msaa_samples, result.depth_enabled ? "D32_SFLOAT" : "disabled");
+  std::printf("vulkan.feature_edges=%zu (silhouette + crease)\n", result.feature_edge_count);
   std::printf("vulkan.render=%s\n", rendered ? "ok" : "failed");
   if (!rendered) {
     std::printf("vulkan.error=%s\n", result.error.c_str());
@@ -682,6 +718,7 @@ int RunVulkanRender(const std::string& out_dir, bool use_demo_scene, int* exit_c
   if (!saved)
     std::printf("vulkan.png_error=%s\n", save_error.c_str());
   std::printf("vulkan.status=%s\n", saved ? "OK" : "FAILED");
+  TL_FreeSSXBranches(ssx_branches);
   for (ON_Mesh* mesh : owned_meshes)
     delete mesh;
   delete swept;

@@ -38,6 +38,11 @@ const float kOrigin[4] = { TL_CatppuccinMochaTheme::kYellow[0], TL_CatppuccinMoc
 const float kGeometryFallback[4] = { TL_CatppuccinMochaTheme::kSapphire[0],
                                      TL_CatppuccinMochaTheme::kSapphire[1],
                                      TL_CatppuccinMochaTheme::kSapphire[2], 1.0f };
+// Silhouette + crease overlay: Text (#cdd6f4), the lightest neutral in the palette, so
+// it reads as a drawing line rather than as another material.
+const float kFeatureEdge[4] = { TL_CatppuccinMochaTheme::kText[0], TL_CatppuccinMochaTheme::kText[1],
+                                TL_CatppuccinMochaTheme::kText[2], TL_CatppuccinMochaTheme::kText[3] };
+
 const float kMeshColor[4] = { TL_CatppuccinMochaTheme::kMauve[0], TL_CatppuccinMochaTheme::kMauve[1],
                               TL_CatppuccinMochaTheme::kMauve[2], 1.0f };
 
@@ -824,8 +829,32 @@ bool TL_VulkanFourViewRenderer::RenderScene(
     {
       for (const ON_Mesh* mesh : extra_meshes)
       {
-        if (nullptr != mesh)
-          AppendMeshTriangles(*mesh, vp, rect, window, kMeshColor, triangles, triangle_count);
+        if (nullptr == mesh)
+          continue;
+        AppendMeshTriangles(*mesh, vp, rect, window, kMeshColor, triangles, triangle_count);
+      }
+    }
+
+    // Feature edges (silhouette + creases) sit on top of the shading, like a technical
+    // illustration: without them a smooth-shaded solid has no readable outline.
+    if (options.enable_feature_edges)
+    {
+      const double crease_radians =
+        options.crease_angle_degrees * ON_PI / 180.0;
+      for (const ON_Mesh* mesh : extra_meshes)
+      {
+        if (nullptr == mesh)
+          continue;
+        ON_SimpleArray<ON_Line> feature_lines;
+        TL_ExtractMeshFeatureEdges(*mesh, vp.m_camera_dir, crease_radians, feature_lines, nullptr,
+                                   true);
+        for (int k = 0; k < feature_lines.Count(); ++k)
+        {
+          const std::vector<ON_3dPoint> segment = { feature_lines[k].from, feature_lines[k].to };
+          EmitWorldPolyline(vp, rect, window, segment, kFeatureEdge, lines,
+                            /*bias_towards_eye=*/true);
+        }
+        out_result.feature_edge_count += feature_lines.Count();
       }
     }
 

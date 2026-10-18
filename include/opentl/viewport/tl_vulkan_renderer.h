@@ -57,6 +57,8 @@ struct TL_VulkanRenderOptions
   bool enable_depth = true;        ///< 32-bit float depth buffer (`D32_SFLOAT`)
   bool enable_shaded_meshes = true;///< Render shaded triangle meshes alongside wireframes
   bool cull_backfaces = true;      ///< CULL_MODE_BACK for closed meshes (see TL_CapMeshOpenBoundaryLoops)
+  bool enable_feature_edges = true;///< Draw mesh silhouette + hard crease edges over the shading
+  double crease_angle_degrees = 30.0; ///< Dihedral angle above which an edge counts as a crease
 };
 
 struct TL_VulkanRenderResult
@@ -72,6 +74,7 @@ struct TL_VulkanRenderResult
   bool depth_enabled = false;    ///< True when D32_SFLOAT depth attachment was active
   size_t vertex_count = 0;       ///< Total line segments submitted
   size_t triangle_count = 0;     ///< Total shaded triangles submitted
+  size_t feature_edge_count = 0; ///< Silhouette + crease segments drawn from the meshes
   std::vector<uint8_t> rgba;     ///< Row-major RGBA8 pixel buffer (width * height * 4 bytes)
   std::string error;
 };

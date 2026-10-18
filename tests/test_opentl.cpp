@@ -2153,6 +2153,299 @@ void TestMeshCapping()
 
   EndSection();
 }
+
+// ---------------------------------------------------------------------------
+// 18. Curve x Curve and Surface x Surface intersection
+// ---------------------------------------------------------------------------
+namespace {
+
+ON_NurbsSurface MakeTestPlanePatch(const ON_Plane& plane, double half)
+{
+  ON_NurbsSurface patch(3, false, 2, 2, 2, 2);
+  patch.SetCV(0, 0, plane.PointAt(-half, -half));
+  patch.SetCV(0, 1, plane.PointAt(-half, half));
+  patch.SetCV(1, 0, plane.PointAt(half, -half));
+  patch.SetCV(1, 1, plane.PointAt(half, half));
+  patch.SetKnot(0, 0, 0.0);
+  patch.SetKnot(0, 1, 1.0);
+  patch.SetKnot(1, 0, 0.0);
+  patch.SetKnot(1, 1, 1.0);
+  return patch;
+}
+
+} // anonymous namespace
+
+void TestIntersectionStage6()
+{
+  BeginSection("curve x curve and surface x surface intersection");
+
+  // ---- curve x curve: both strategies must agree ------------------------
+  {
+    ON_ArcCurve circle(ON_Circle(ON_Plane::World_xy, 5.0));
+    ON_LineCurve diameter(ON_Line(ON_3dPoint(-8, 0, 0), ON_3dPoint(8, 0, 0)));
+    ON_SimpleArray<TL_CurveCurveIntersectionEvent> primary, grid;
+    const int np = TL_IntersectCurves(circle, diameter, 1e-8, primary);
+    const int ng = TL_IntersectCurvesByGrid(circle, diameter, 1e-8, grid);
+    CHECK_EQ_INT(np, 2);
+    CHECK_EQ_INT(ng, 2);
+    for (int i = 0; i < np && i < ng; ++i)
+    {
+      CHECK_NEAR(primary[i].point_a.DistanceTo(grid[i].point_a), 0.0, 1e-9);
+      CHECK_NEAR(primary[i].point_a.DistanceTo(primary[i].point_b), 0.0, 1e-9);
+      // Both hits are on the circle and on the line.
+      CHECK_NEAR(primary[i].point_a.DistanceTo(ON_3dPoint::Origin), 5.0, 1e-9);
+      CHECK_NEAR(primary[i].point_a.y, 0.0, 1e-9);
+    }
+  }
+
+  // ---- tangency: exactly one hit, both strategies ----------------------
+  {
+    ON_ArcCurve circle(ON_Circle(ON_Plane::World_xy, 5.0));
+    ON_LineCurve tangent(ON_Line(ON_3dPoint(-8, 5, 0), ON_3dPoint(8, 5, 0)));
+    ON_SimpleArray<TL_CurveCurveIntersectionEvent> primary, grid;
+    const int np = TL_IntersectCurves(circle, tangent, 1e-7, primary);
+    const int ng = TL_IntersectCurvesByGrid(circle, tangent, 1e-7, grid);
+    CHECK_EQ_INT(np, 1);
+    CHECK_EQ_INT(ng, 1);
+    if (np == 1 && ng == 1)
+    {
+      CHECK_NEAR(primary[0].point_a.x, 0.0, 1e-6);
+      CHECK_NEAR(primary[0].point_a.y, 5.0, 1e-6);
+      CHECK_NEAR(primary[0].point_a.DistanceTo(grid[0].point_a), 0.0, 1e-6);
+    }
+  }
+
+  // ---- two circles crossing twice --------------------------------------
+  {
+    ON_ArcCurve c0(ON_Circle(ON_Plane::World_xy, 5.0));
+    ON_ArcCurve c1(ON_Circle(ON_Plane(ON_3dPoint(6, 0, 0), ON_3dVector::ZAxis), 4.0));
+    ON_SimpleArray<TL_CurveCurveIntersectionEvent> primary, grid;
+    const int np = TL_IntersectCurves(c0, c1, 1e-9, primary);
+    const int ng = TL_IntersectCurvesByGrid(c0, c1, 1e-9, grid);
+    CHECK_EQ_INT(np, 2);
+    CHECK_EQ_INT(ng, 2);
+    for (int i = 0; i < np; ++i)
+    {
+      CHECK_NEAR(primary[i].point_a.DistanceTo(ON_3dPoint::Origin), 5.0, 1e-8);
+      CHECK_NEAR(primary[i].point_b.DistanceTo(ON_3dPoint(6, 0, 0)), 4.0, 1e-8);
+      CHECK_NEAR(primary[i].point_a.DistanceTo(primary[i].point_b), 0.0, 1e-8);
+    }
+  }
+
+  // ---- miss ------------------------------------------------------------
+  {
+    ON_ArcCurve circle(ON_Circle(ON_Plane::World_xy, 5.0));
+    ON_LineCurve outside(ON_Line(ON_3dPoint(-8, 9, 0), ON_3dPoint(8, 9, 0)));
+    ON_SimpleArray<TL_CurveCurveIntersectionEvent> primary, grid;
+    CHECK_EQ_INT(TL_IntersectCurves(circle, outside, 1e-6, primary), 0);
+    CHECK_EQ_INT(TL_IntersectCurvesByGrid(circle, outside, 1e-6, grid), 0);
+  }
+
+  // ---- spline x line (NURBS, not analytic) -----------------------------
+  {
+    ON_ArcCurve circle(ON_Circle(ON_Plane::World_xy, 5.0));
+    ON_NurbsCurve spline(3, false, 3, 6);
+    const ON_3dPoint cvs[6] = { ON_3dPoint(-8, 0, 1), ON_3dPoint(-5, 4, -1), ON_3dPoint(-1, -4, 2),
+                                ON_3dPoint(2, 5, -2), ON_3dPoint(5, -3, 1), ON_3dPoint(8, 0, 0) };
+    for (int i = 0; i < 6; ++i)
+      spline.SetCV(i, cvs[i]);
+    spline.MakeClampedUniformKnotVector(1.0);
+
+    ON_LineCurve line(ON_Line(ON_3dPoint(-9, 0, 0), ON_3dPoint(9, 0, 0)));
+    ON_SimpleArray<TL_CurveCurveIntersectionEvent> primary, grid;
+    const int np = TL_IntersectCurves(spline, line, 1e-7, primary);
+    const int ng = TL_IntersectCurvesByGrid(spline, line, 1e-7, grid);
+    CHECK_EQ_INT(np, ng);
+    for (int i = 0; i < np; ++i)
+      CHECK_MSG(primary[i].point_a.DistanceTo(primary[i].point_b) <= 1e-7,
+                "spline x line event is not on the line");
+  }
+
+  // ---- SSX: sphere x plane -> one closed circle of radius sqrt(15) ------
+  {
+    ON_Sphere sphere(ON_3dPoint(0, 0, 0), 4.0);
+    ON_NurbsSurface sphere_nurbs;
+    CHECK(sphere.GetNurbForm(sphere_nurbs));
+    ON_NurbsSurface plane = MakeTestPlanePatch(ON_Plane(ON_3dPoint(0, 0, 1), ON_3dVector::ZAxis), 8.0);
+
+    std::vector<TL_SurfaceSurfaceIntersectionBranch> branches;
+    const int count = TL_SurfaceSurfaceIntersect(sphere_nurbs, plane, 1e-9, branches);
+    CHECK_EQ_INT(count, 1);
+    if (count == 1)
+    {
+      const auto& branch = branches[0];
+      CHECK(branch.is_closed);
+      CHECK(branch.points_3d.Count() > 50);
+      CHECK(nullptr != branch.curve_3d);
+      CHECK_MSG(branch.max_error <= 1e-6,
+                "sphere x plane max_error = " + std::to_string(branch.max_error));
+      CHECK_EQ_INT(branch.params_a.Count(), branch.points_3d.Count());
+      CHECK_EQ_INT(branch.params_b.Count(), branch.points_3d.Count());
+
+      const double expected_radius = std::sqrt(16.0 - 1.0);
+      for (int i = 0; i < branch.points_3d.Count(); ++i)
+      {
+        const ON_3dPoint& p = branch.points_3d[i];
+        CHECK_NEAR(std::sqrt(p.x * p.x + p.y * p.y), expected_radius, 1e-9);
+        CHECK_NEAR(p.z, 1.0, 1e-9);
+      }
+
+      // The fitted curve must actually lie on both surfaces.
+      const ON_Interval dom = branch.curve_3d->Domain();
+      for (int k = 0; k <= 8; ++k)
+      {
+        const ON_3dPoint p = branch.curve_3d->PointAt(dom.ParameterAt(k / 8.0));
+        CHECK_NEAR(p.DistanceTo(ON_3dPoint::Origin), 4.0, 1e-5);
+        CHECK_NEAR(p.z, 1.0, 1e-5);
+      }
+    }
+    TL_FreeSSXBranches(branches);
+    CHECK(branches.empty());
+  }
+
+  // ---- SSX: perpendicular cylinders -> two closed loops ----------------
+  {
+    ON_Cylinder cyl_a(ON_Circle(ON_Plane(ON_3dPoint(0, 0, -6), ON_3dVector::ZAxis), 3.0), 12.0);
+    ON_NurbsSurface a;
+    ON_Cylinder cyl_b(ON_Circle(ON_Plane(ON_3dPoint(-6, 0, 0), ON_3dVector::XAxis), 3.0), 12.0);
+    ON_NurbsSurface b;
+    CHECK(cyl_a.GetNurbForm(a));
+    CHECK(cyl_b.GetNurbForm(b));
+
+    std::vector<TL_SurfaceSurfaceIntersectionBranch> branches;
+    const int count = TL_SurfaceSurfaceIntersect(a, b, 1e-8, branches);
+    CHECK_EQ_INT(count, 2);
+    int closed_count = 0;
+    for (const auto& branch : branches)
+    {
+      if (branch.is_closed)
+        ++closed_count;
+      CHECK(nullptr != branch.curve_3d);
+      CHECK_MSG(branch.max_error <= 1e-5,
+                "cyl x cyl max_error = " + std::to_string(branch.max_error));
+      for (int i = 0; i < branch.points_3d.Count(); ++i)
+      {
+        const ON_3dPoint& p = branch.points_3d[i];
+        // On cylinder A (axis Z, radius 3) and on cylinder B (axis X, radius 3).
+        CHECK_NEAR(std::sqrt(p.x * p.x + p.y * p.y), 3.0, 1e-7);
+        CHECK_NEAR(std::sqrt(p.y * p.y + p.z * p.z), 3.0, 1e-7);
+      }
+    }
+    CHECK_EQ_INT(closed_count, 2);
+    TL_FreeSSXBranches(branches);
+  }
+
+  // ---- SSX: parallel offset cylinders -> two open straight branches ----
+  {
+    ON_Cylinder cyl_a(ON_Circle(ON_Plane(ON_3dPoint(0, 0, -6), ON_3dVector::ZAxis), 3.0), 12.0);
+    ON_Cylinder cyl_b(ON_Circle(ON_Plane(ON_3dPoint(4, 0, -6), ON_3dVector::ZAxis), 3.0), 12.0);
+    ON_NurbsSurface a;
+    ON_NurbsSurface b;
+    CHECK(cyl_a.GetNurbForm(a));
+    CHECK(cyl_b.GetNurbForm(b));
+
+    std::vector<TL_SurfaceSurfaceIntersectionBranch> branches;
+    const int count = TL_SurfaceSurfaceIntersect(a, b, 1e-8, branches);
+    CHECK_EQ_INT(count, 2);
+    for (const auto& branch : branches)
+    {
+      CHECK(!branch.is_closed);            // the branches run off both ends
+      CHECK(branch.points_3d.Count() > 20);
+      CHECK(branch.max_error <= 1e-6);
+      // The two planes x = +-2 are the intersection lines.
+      CHECK_NEAR(std::fabs(branch.points_3d[0].x), 2.0, 1e-7);
+      CHECK_NEAR(std::fabs(branch.points_3d[0].y), std::sqrt(5.0), 1e-6);
+    }
+    TL_FreeSSXBranches(branches);
+  }
+
+  // ---- SSX: disjoint surfaces -> no branches --------------------------
+  {
+    ON_Sphere sphere(ON_3dPoint(0, 0, 0), 2.0);
+    ON_NurbsSurface sphere_nurbs;
+    CHECK(sphere.GetNurbForm(sphere_nurbs));
+    ON_NurbsSurface far_plane = MakeTestPlanePatch(
+      ON_Plane(ON_3dPoint(0, 0, 10), ON_3dVector::ZAxis), 4.0);
+    std::vector<TL_SurfaceSurfaceIntersectionBranch> branches;
+    CHECK_EQ_INT(TL_SurfaceSurfaceIntersect(sphere_nurbs, far_plane, 1e-8, branches), 0);
+    CHECK(branches.empty());
+  }
+
+  // ---- feature edges: boundary / crease / silhouette --------------------
+  {
+    ON_Mesh box;
+    const ON_3dPoint c[8] = { ON_3dPoint(-1, -1, -1), ON_3dPoint(1, -1, -1), ON_3dPoint(1, 1, -1),
+                              ON_3dPoint(-1, 1, -1), ON_3dPoint(-1, -1, 1), ON_3dPoint(1, -1, 1),
+                              ON_3dPoint(1, 1, 1), ON_3dPoint(-1, 1, 1) };
+    for (int i = 0; i < 8; ++i)
+      box.SetVertex(i, c[i]);
+    const int quads[6][4] = { { 0, 3, 2, 1 }, { 4, 5, 6, 7 }, { 0, 1, 5, 4 },
+                              { 2, 3, 7, 6 }, { 0, 4, 7, 3 }, { 1, 2, 6, 5 } };
+    for (int i = 0; i < 6; ++i)
+      box.SetQuad(i, quads[i][0], quads[i][1], quads[i][2], quads[i][3]);
+    box.ComputeFaceNormals();
+
+    ON_SimpleArray<ON_Line> lines;
+    ON_SimpleArray<int> kinds;
+    const int count = TL_ExtractMeshFeatureEdges(box, ON_3dVector(0, 0, -1), ON_PI / 6.0, lines,
+                                                 &kinds, true);
+    CHECK_EQ_INT(count, 12);          // a box has exactly 12 hard edges
+    CHECK_EQ_INT(lines.Count(), count);
+    CHECK_EQ_INT(kinds.Count(), count);
+
+    int boundary = 0;
+    int crease = 0;
+    for (int i = 0; i < kinds.Count(); ++i)
+    {
+      if (kinds[i] & TL_MESH_EDGE_BOUNDARY)
+        ++boundary;
+      if (kinds[i] & TL_MESH_EDGE_CREASE)
+        ++crease;
+    }
+    CHECK_EQ_INT(boundary, 0);
+    CHECK_EQ_INT(crease, 12);
+
+    // A smooth tube must report boundary edges on its open rims and a silhouette that
+    // depends on the view direction.
+    ON_ArcCurve rail(ON_Arc(ON_Plane(ON_3dPoint(-6, -6, 0), ON_3dVector::ZAxis), 9.0, ON_PI));
+    ON_ArcCurve profile(ON_Circle(ON_Plane::World_xy, 1.6));
+    ON_NurbsSurface* swept = TL_Sweep1Rail(rail, profile, 16, nullptr);
+    CHECK(nullptr != swept);
+    if (nullptr != swept)
+    {
+      ON_Mesh tube;
+      CHECK(TL_MeshSurfaceGrid(*swept, 32, 64, &tube));
+      delete swept;
+      tube.ComputeFaceNormals();
+
+      ON_SimpleArray<ON_Line> front_lines;
+      ON_SimpleArray<int> front_kinds;
+      TL_ExtractMeshFeatureEdges(tube, ON_3dVector(0, 1, 0), ON_PI / 6.0, front_lines, &front_kinds,
+                                 true);
+      ON_SimpleArray<ON_Line> top_lines;
+      ON_SimpleArray<int> top_kinds;
+      TL_ExtractMeshFeatureEdges(tube, ON_3dVector(0, 0, -1), ON_PI / 6.0, top_lines, &top_kinds,
+                                 true);
+
+      int front_silhouette = 0;
+      int front_boundary = 0;
+      for (int i = 0; i < front_kinds.Count(); ++i)
+      {
+        if (front_kinds[i] & TL_MESH_EDGE_SILHOUETTE)
+          ++front_silhouette;
+        if (front_kinds[i] & TL_MESH_EDGE_BOUNDARY)
+          ++front_boundary;
+      }
+      CHECK_MSG(front_boundary > 0, "open tube must report boundary edges");
+      CHECK_MSG(front_silhouette > 0, "front view of a tube must have silhouette edges");
+      CHECK_MSG(top_lines.Count() != front_lines.Count() ||
+                  front_silhouette != 0,
+                "silhouette extraction must depend on the view direction");
+    }
+  }
+
+  EndSection();
+}
 int main() {
   ON::Begin();
 
@@ -2176,6 +2469,7 @@ int main() {
   TestSweep1Rail();
   TestVulkanRenderer();
   TestMeshCapping();
+  TestIntersectionStage6();
 
   std::printf("\n=====================\n");
   std::printf("sections=%d checks=%d failures=%d failed_sections=%d\n", g_state.section_index,

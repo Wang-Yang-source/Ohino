@@ -13,6 +13,8 @@
 
 #include "../tl_export.h"
 
+#include <vector>
+
 struct TL_CurveCurveIntersectionEvent
 {
   double param_a = 0.0;
@@ -116,4 +118,68 @@ TL_FUNCTION int TL_IntersectCurveLineBySubdivision(
   const ON_Line& line,
   double tolerance,
   ON_SimpleArray<TL_CurveCurveIntersectionEvent>& events
+);
+
+// ============================================================================
+// General Curve x Curve intersection (dual-strategy cross-validated)
+// ============================================================================
+
+/**
+ * Primary Curve x Curve intersection solver: recursive AABB tree subdivision
+ * with 2-parameter Gauss-Newton refinement (and coordinate-descent fallback for
+ * grazing tangencies), plus overlap & closed-seam deduplication.
+ *
+ * Returns the number of intersection events appended to `events`.
+ */
+TL_FUNCTION int TL_IntersectCurves(
+  const ON_Curve& curve_a,
+  const ON_Curve& curve_b,
+  double tolerance,
+  ON_SimpleArray<TL_CurveCurveIntersectionEvent>& events
+);
+
+/**
+ * Independent second Curve x Curve strategy: uniform 2D parameter grid with
+ * rigorous triangle-inequality chord lower bound
+ *   min_{t,s} |C_a(t) - C_b(s)| >= min_corners |C_a - C_b| - chord_a - chord_b
+ * followed by local 2D Newton polish.  Used to cross-check `TL_IntersectCurves`.
+ */
+TL_FUNCTION int TL_IntersectCurvesByGrid(
+  const ON_Curve& curve_a,
+  const ON_Curve& curve_b,
+  double tolerance,
+  ON_SimpleArray<TL_CurveCurveIntersectionEvent>& events
+);
+
+// ============================================================================
+// Surface x Surface intersection (SSX marching + NURBS branch fitting)
+// ============================================================================
+
+struct TL_SurfaceSurfaceIntersectionBranch
+{
+  ON_NurbsCurve* curve_3d = nullptr;        ///< Caller owns (or call TL_FreeSSXBranches)
+  ON_SimpleArray<ON_3dPoint> points_3d;     ///< Ordered 3D trace samples along the branch
+  ON_SimpleArray<ON_2dPoint> params_a;      ///< Corresponding (u_a, v_a) parameters on surface A
+  ON_SimpleArray<ON_2dPoint> params_b;      ///< Corresponding (u_b, v_b) parameters on surface B
+  bool is_closed = false;                   ///< True when the branch forms a closed loop
+  double max_error = 0.0;                   ///< Measured max distance from curve_3d to both surfaces
+};
+
+/**
+ * Intersect two ON_Surface patches within `tolerance` using seed discovery +
+ * tangent predictor / minimum-norm 4D Gauss-Newton corrector marching, then
+ * interpolate each traced branch into a degree-3 ON_NurbsCurve.
+ *
+ * Returns the number of branches produced.
+ */
+TL_FUNCTION int TL_SurfaceSurfaceIntersect(
+  const ON_Surface& surface_a,
+  const ON_Surface& surface_b,
+  double tolerance,
+  std::vector<TL_SurfaceSurfaceIntersectionBranch>& branches
+);
+
+/** Free all `curve_3d` pointers owned by `branches` and clear the vector. */
+TL_FUNCTION void TL_FreeSSXBranches(
+  std::vector<TL_SurfaceSurfaceIntersectionBranch>& branches
 );

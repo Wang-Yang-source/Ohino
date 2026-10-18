@@ -497,3 +497,103 @@ TL_FUNCTION int TL_CapMeshOpenBoundaryLoops(ON_Mesh& mesh, int* out_triangles,
     *out_open_chains = open_chains;
   return capped;
 }
+
+// ============================================================================
+// Feature edges: boundary rims, hard creases, silhouette
+// ============================================================================
+
+TL_FUNCTION int TL_ExtractMeshFeatureEdges(
+  const ON_Mesh& mesh,
+  const ON_3dVector& view_dir,
+  double crease_angle_radians,
+  ON_SimpleArray<ON_Line>& out_lines,
+  ON_SimpleArray<int>* out_kinds,
+  bool include_silhouette)
+{
+  out_lines.SetCount(0);
+  if (nullptr != out_kinds)
+    out_kinds->SetCount(0);
+
+  if (mesh.m_F.Count() <= 0)
+    return 0;
+
+  ON_3dVector view = view_dir;
+  if (!view.Unitize())
+    view = ON_3dVector(0.0, 0.0, -1.0);
+
+  const double crease = std::max(0.0, crease_angle_radians);
+  const double cos_crease = std::cos(crease);
+
+  const ON_MeshTopology& top = mesh.Topology();
+
+  // Face normals computed once from the triangle (or quad) winding.
+  std::vector<ON_3dVector> face_normals(static_cast<size_t>(mesh.m_F.Count()),
+                                        ON_3dVector::ZeroVector);
+  for (int fi = 0; fi < mesh.m_F.Count(); ++fi)
+  {
+    const ON_MeshFace& face = mesh.m_F[fi];
+    if (face.vi[0] < 0 || face.vi[1] < 0 || face.vi[2] < 0)
+      continue;
+    if (face.vi[0] >= mesh.VertexCount() || face.vi[1] >= mesh.VertexCount() ||
+        face.vi[2] >= mesh.VertexCount())
+      continue;
+    ON_3dVector normal = ON_CrossProduct(mesh.m_V[face.vi[1]] - mesh.m_V[face.vi[0]],
+                                         mesh.m_V[face.vi[2]] - mesh.m_V[face.vi[0]]);
+    normal.Unitize();
+    face_normals[static_cast<size_t>(fi)] = normal;
+  }
+
+  int appended = 0;
+  for (int ei = 0; ei < top.m_tope.Count(); ++ei)
+  {
+    const ON_MeshTopologyEdge& edge = top.m_tope[ei];
+    if (edge.m_topf_count <= 0)
+      continue;
+
+    int kind = TL_MESH_EDGE_NONE;
+    if (1 == edge.m_topf_count)
+    {
+      kind = TL_MESH_EDGE_BOUNDARY;
+    }
+    else if (edge.m_topf_count >= 2)
+    {
+      const int f0 = edge.m_topfi[0];
+      const int f1 = edge.m_topfi[1];
+      if (f0 >= 0 && f1 >= 0 && f0 < mesh.m_F.Count() && f1 < mesh.m_F.Count())
+      {
+        const ON_3dVector n0 = face_normals[static_cast<size_t>(f0)];
+        const ON_3dVector n1 = face_normals[static_cast<size_t>(f1)];
+        if (!n0.IsZero() && !n1.IsZero())
+        {
+          if (ON_DotProduct(n0, n1) <= cos_crease)
+            kind |= TL_MESH_EDGE_CREASE;
+          if (include_silhouette)
+          {
+            // Strictly opposite sides only: a face exactly perpendicular to the view
+            // (d == 0) is a crease/outline case, not a silhouette, and counting it makes
+            // an axis-aligned view report far too many outline edges.
+            const double d0 = ON_DotProduct(n0, view);
+            const double d1 = ON_DotProduct(n1, view);
+            if (d0 * d1 < 0.0)
+              kind |= TL_MESH_EDGE_SILHOUETTE;
+          }
+        }
+      }
+    }
+
+    if (TL_MESH_EDGE_NONE == kind)
+      continue;
+
+    const int vi0 = RepresentativeVertex(top, edge.m_topvi[0]);
+    const int vi1 = RepresentativeVertex(top, edge.m_topvi[1]);
+    if (vi0 < 0 || vi1 < 0 || vi0 >= mesh.VertexCount() || vi1 >= mesh.VertexCount())
+      continue;
+
+    out_lines.Append(ON_Line(mesh.m_V[vi0], mesh.m_V[vi1]));
+    if (nullptr != out_kinds)
+      out_kinds->Append(kind);
+    ++appended;
+  }
+
+  return appended;
+}

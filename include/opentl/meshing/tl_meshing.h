@@ -83,3 +83,29 @@ TL_FUNCTION int TL_CountMeshBoundaryEdges(const ON_Mesh& mesh);
 TL_FUNCTION int TL_CapMeshOpenBoundaryLoops(ON_Mesh& mesh, int* out_triangles = nullptr,
                                             int* out_open_chains = nullptr,
                                             bool hard_crease = true);
+
+enum TL_MeshFeatureEdgeKind : int
+{
+  TL_MESH_EDGE_NONE = 0,
+  TL_MESH_EDGE_BOUNDARY = 1,   ///< edge used by a single face (open rim)
+  TL_MESH_EDGE_CREASE = 2,     ///< dihedral angle between the two faces >= crease angle
+  TL_MESH_EDGE_SILHOUETTE = 4  ///< faces straddle the view direction (n0.v)(n1.v) <= 0
+};
+
+/**
+ * Extract the edges a technical drawing would show: open rims, hard creases and the
+ * silhouette as seen from `view_dir` (the direction the camera looks along).
+ *
+ * Edges are classified, not merged: a crease that is also a silhouette reports both bits.
+ * `out_lines` receives one segment per surviving edge, in mesh coordinate space.
+ *
+ * Returns the number of segments appended.
+ */
+TL_FUNCTION int TL_ExtractMeshFeatureEdges(
+  const ON_Mesh& mesh,
+  const ON_3dVector& view_dir,
+  double crease_angle_radians,
+  ON_SimpleArray<ON_Line>& out_lines,
+  ON_SimpleArray<int>* out_kinds = nullptr,
+  bool include_silhouette = true
+);

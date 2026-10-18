@@ -536,6 +536,29 @@ layout.View(1).ScreenToRay(screen, from, dir);               // 透视拾取射�
 
 封口正确性是**量出来的**：半环管解析体积 `πr²L = π·1.6²·(π·9) ≈ 227.40`，48×96 网格封口后散度定理得 `226.35`（差 0.46%，纯三角化误差）；端盖若绕反，体积会明显偏小甚至为负。测试同时断言：封口后边界边 0、三角数 = 边界边数、对已闭合网格再封口返回 0（幂等）。
 
+#### 阶段 6：曲线×曲线 / 曲面×曲面求交 + 特征边
+
+| API | 说明 |
+| --- | --- |
+| `TL_IntersectCurves` | 主求解器：区间 AABB 分枝限界 + 2 参数 Gauss-Newton（切触时退化为交替一维投影 + 黄金分割收尾） |
+| `TL_IntersectCurvesByGrid` | 独立第二算法：均匀 2 参数网格 + 三角不等式严格下界 `min四角距离 − 弦长a − 弦长b > tol` 剪枝，用于对拍 |
+| `TL_SurfaceSurfaceIntersect` | 种子发现（采样 + 最近点投影）→ 切向预测 → 3×4 最小范数 Gauss-Newton 校正 → 双向步进追踪 → 三次 NURBS 插值拟合 |
+| `TL_FreeSSXBranches` | 释放分支里 `curve_3d` 的所有权 |
+| `TL_ExtractMeshFeatureEdges` | 边界边 / 折痕边（二面角 ≥ 阈值）/ 轮廓边（两面法向分居视线两侧）分类提取 |
+
+实测（`opentl_cli --render-vulkan` 每次都会真算一遍）：
+
+```
+circle x diameter   primary=2 grid=2   max_point_delta=0.0e+00
+circle x tangent    primary=1 grid=1   （切触，两条路径一致）
+circle x circle     primary=2 grid=2   最大点差 6.3e-16
+sphere x plane      branches=1 closed=1 pts=171 err=1.8e-08  r=√15 z=1（解析值）
+cyl x cyl (⊥)       branches=2 closed=2 err=3.4e-08
+cyl x cyl (平行偏移) branches=2 closed=0 err=1.1e-12（两条直母线）
+tube x z=0 plane    branches=2 open        （渲染时以黄色交线画进场景）
+vulkan.feature_edges=2292
+```
+
 **深度测试是被测量过的，不是被假设的**：测试把一块 ±30 的大四边形放在 FRONT 视口构造平面前方，统计视口内「网格颜色」像素数——基线 >0，遮挡后必须为 0。这条断言正是发现 `ON_BoundingBox::GetCorners` 返回 `bool`（被误当成角点数量）的地方：该错误让深度窗口塌缩到单个角点，整幅图的深度值几乎相同，深度测试退化成画家算法，于是出现「实体被网格穿透 + 锯齿状三角缺口」。
 
 ### 4.5 双格式文件序列化能力
@@ -695,7 +718,7 @@ cmake --build build --config Release -j8
 > | 项目 | 结果 |
 > | --- | --- |
 > | clean build（删除 `build/` 后重新配置） | 通过，0 error；`opentl/src`、`apps`、`tests` 0 warning（其余 warning 均来自 openNURBS/zlib 第三方源码） |
-> | `opentl_tests` | 17 个测试组、794 项检查、0 失败 |
+> | `opentl_tests` | 18 个测试组、2216 项检查、0 失败 |
 > | `ctest` | 4/4 通过（`opentl_tests`、`opentl_cli_demo`、`opentl_cli_views`、`opentl_cli_vulkan`） |
 > | 四视图布局往返 | `opentl_cli --views` 退出码 0，`views.roundtrip=identical` |
 > | Vulkan 四视图渲染 | `vulkan.device=Apple M4`、`vulkan.backend=Vulkan 1.2.357`、`msaa=4x`、`depth=D32_SFLOAT`、1600×900 PNG 写出成功 |

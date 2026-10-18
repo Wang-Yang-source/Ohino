@@ -1,6 +1,8 @@
 #include "opentl/intersect/tl_intersect.h"
+#include "opentl/closest_point/tl_closest_point.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cmath>
 #include <vector>
 
@@ -1101,4 +1103,1315 @@ TL_FUNCTION int TL_IntersectCurveLineBySubdivision(
   }
 
   return events.Count();
+}
+
+// ============================================================================
+// Curve x Curve intersection -- primary solver and independent grid solver
+// ============================================================================
+
+namespace {
+
+/** Evaluate a curve point plus first and second derivatives; false when outside the domain. */
+bool EvalCurveDTK(const ON_Curve& curve, double t, ON_3dPoint& p, ON_3dVector& d1, ON_3dVector& d2)
+{
+  if (!ON_IsValid(t))
+    return false;
+  const ON_Interval dom = curve.Domain();
+  if (!dom.IsIncreasing())
+    return false;
+  if (t < dom.Min() - 1e-12 * dom.Length() || t > dom.Max() + 1e-12 * dom.Length())
+    return false;
+
+  ON_3dPoint unused_point = ON_3dPoint::Origin;
+  ON_3dVector unused_first = ON_3dVector::ZeroVector;
+  if (!curve.EvPoint(t, p) || !curve.Ev1Der(t, unused_point, d1))
+    return false;
+  if (!curve.Ev2Der(t, unused_point, unused_first, d2))
+    d2 = ON_3dVector::ZeroVector;
+  return true;
+}
+
+double CurveCurveGap(const ON_Curve& curve_a, const ON_Curve& curve_b, double ta, double tb)
+{
+  ON_3dPoint pa = ON_3dPoint::Origin;
+  ON_3dPoint pb = ON_3dPoint::Origin;
+  if (!curve_a.EvPoint(ta, pa) || !curve_b.EvPoint(tb, pb))
+    return ON_DBL_MAX;
+  return pa.DistanceTo(pb);
+}
+
+/**
+ * Local 2-parameter minimisation of |C_a(ta) - C_b(tb)|^2.
+ *
+ * Full Gauss-Newton with the second-order curvature correction is used while the 2x2
+ * Hessian stays well conditioned; near a tangency (parallel tangents) it degenerates and
+ * the iteration falls back to alternating 1D projection steps, which still converge
+ * because each sub-problem is a strict 1D minimum.
+ */
+bool RefineCurveCurvePair(const ON_Curve& curve_a, const ON_Curve& curve_b,
+                          const ON_Interval& span_a, const ON_Interval& span_b,
+                          double& ta, double& tb, double& dist)
+{
+  const double lo_a = span_a.Min();
+  const double hi_a = span_a.Max();
+  const double lo_b = span_b.Min();
+  const double hi_b = span_b.Max();
+  if (!(hi_a > lo_a) || !(hi_b > lo_b))
+    return false;
+
+  ta = std::clamp(ta, lo_a, hi_a);
+  tb = std::clamp(tb, lo_b, hi_b);
+
+  double best_dist = ON_DBL_MAX;
+  double best_ta = ta;
+  double best_tb = tb;
+
+  for (int iter = 0; iter < 64; ++iter)
+  {
+    ON_3dPoint pa, pb;
+    ON_3dVector da, dda, db, ddb;
+    if (!EvalCurveDTK(curve_a, ta, pa, da, dda) || !EvalCurveDTK(curve_b, tb, pb, db, ddb))
+      break;
+
+    const ON_3dVector r = pa - pb;
+    const double d = r.Length();
+    if (d < best_dist)
+    {
+      best_dist = d;
+      best_ta = ta;
+      best_tb = tb;
+    }
+    if (d <= 1e-15)
+      break;
+
+    const double g0 = ON_DotProduct(r, da);
+    const double g1 = -ON_DotProduct(r, db);
+    if (std::fabs(g0) < 1e-16 && std::fabs(g1) < 1e-16)
+      break;
+
+    const double aa = ON_DotProduct(da, da);
+    const double bb = ON_DotProduct(db, db);
+    const double ab = -ON_DotProduct(da, db);
+    const double h00 = aa + std::max(0.0, ON_DotProduct(r, dda));
+    const double h11 = bb + std::max(0.0, -ON_DotProduct(r, ddb));
+    const double h01 = ab;
+    const double det = h00 * h11 - h01 * h01;
+
+    double step_a = 0.0;
+    double step_b = 0.0;
+    bool used_newton = false;
+
+    if (det > 1e-18 * std::max(1.0, h00 * h11) && aa > 0.0 && bb > 0.0)
+    {
+      step_a = -(h11 * g0 - h01 * g1) / det;
+      step_b = -(h00 * g1 - h01 * g0) / det;
+      used_newton = true;
+    }
+    else
+    {
+      // Tangency: alternate 1D projection steps.
+      if (aa > 0.0)
+        step_a = -g0 / aa;
+      if (bb > 0.0)
+        step_b = -g1 / bb;
+    }
+
+    const double max_a = hi_a - lo_a;
+    const double max_b = hi_b - lo_b;
+    step_a = std::clamp(step_a, -0.5 * max_a, 0.5 * max_a);
+    step_b = std::clamp(step_b, -0.5 * max_b, 0.5 * max_b);
+
+    // Armijo backtracking on the gap.
+    double alpha = 1.0;
+    bool improved = false;
+    double next_ta = ta;
+    double next_tb = tb;
+    for (int ls = 0; ls < 24; ++ls)
+    {
+      const double cand_a = std::clamp(ta + alpha * step_a, lo_a, hi_a);
+      const double cand_b = std::clamp(tb + alpha * step_b, lo_b, hi_b);
+      const double cand_d = CurveCurveGap(curve_a, curve_b, cand_a, cand_b);
+      if (cand_d < d - 1e-18)
+      {
+        next_ta = cand_a;
+        next_tb = cand_b;
+        improved = true;
+        break;
+      }
+      alpha *= 0.5;
+    }
+    if (!improved)
+      break;
+
+    const double move = std::fabs(next_ta - ta) + std::fabs(next_tb - tb);
+    ta = next_ta;
+    tb = next_tb;
+    if (move <= 1e-14 * (1.0 + std::fabs(ta) + std::fabs(tb)))
+      break;
+    if (used_newton && move <= 1e-12)
+      break;
+  }
+
+  // Final alternating 1D polish: guarantees the reported pair really is a local minimum.
+  for (int sweep = 0; sweep < 8; ++sweep)
+  {
+    double t = best_ta;
+    if (TL_GetCurveClosestPoint(curve_a, curve_b.PointAt(best_tb), &t, 1e-13, &span_a))
+      best_ta = std::clamp(t, lo_a, hi_a);
+    t = best_tb;
+    if (TL_GetCurveClosestPoint(curve_b, curve_a.PointAt(best_ta), &t, 1e-13, &span_b))
+      best_tb = std::clamp(t, lo_b, hi_b);
+  }
+
+  const double polished = CurveCurveGap(curve_a, curve_b, best_ta, best_tb);
+  if (polished < best_dist)
+    best_dist = polished;
+  ta = best_ta;
+  tb = best_tb;
+  dist = best_dist;
+  return ON_IsValid(best_dist);
+}
+
+/** Merge events that describe the same 3D location (parameter gaps are unreliable). */
+void MergeCurveCurveEvents(std::vector<TL_CurveCurveIntersectionEvent>& events,
+                           double param_span, double point_tol)
+{
+  std::sort(events.begin(), events.end(),
+            [](const TL_CurveCurveIntersectionEvent& a, const TL_CurveCurveIntersectionEvent& b) {
+              return a.param_a < b.param_a;
+            });
+
+  std::vector<TL_CurveCurveIntersectionEvent> merged;
+  merged.reserve(events.size());
+  const double param_tol = std::max(1e-13, param_span * 1e-9);
+
+  for (const auto& cand : events)
+  {
+    bool absorbed = false;
+    for (auto& kept : merged)
+    {
+      if (std::fabs(kept.param_a - cand.param_a) <= param_tol ||
+          kept.point_a.DistanceTo(cand.point_a) <= point_tol)
+      {
+        if (cand.point_a.DistanceTo(cand.point_b) < kept.point_a.DistanceTo(kept.point_b))
+          kept = cand;
+        absorbed = true;
+        break;
+      }
+    }
+    if (!absorbed)
+      merged.push_back(cand);
+  }
+
+  events.swap(merged);
+}
+
+} // anonymous namespace
+
+TL_FUNCTION int TL_IntersectCurves(
+  const ON_Curve& curve_a,
+  const ON_Curve& curve_b,
+  double tolerance,
+  ON_SimpleArray<TL_CurveCurveIntersectionEvent>& events
+)
+{
+  events.SetCount(0);
+
+  const ON_Interval dom_a = curve_a.Domain();
+  const ON_Interval dom_b = curve_b.Domain();
+  if (!dom_a.IsIncreasing() || !dom_b.IsIncreasing())
+    return 0;
+
+  const double tol = (tolerance > 0.0 && ON_IsValid(tolerance)) ? tolerance : ON_ZERO_TOLERANCE;
+
+  ON_BoundingBox box_a;
+  ON_BoundingBox box_b;
+  if (curve_a.GetBoundingBox(box_a, false) && curve_b.GetBoundingBox(box_b, false))
+  {
+    if (box_a.IsValid() && box_b.IsValid() && box_a.MinimumDistanceTo(box_b) > tol)
+      return 0;
+  }
+
+  // ---- initial subdivision ---------------------------------------------------
+  const int grid_a = std::max(16, curve_a.SpanCount() * 8);
+  const int grid_b = std::max(16, curve_b.SpanCount() * 8);
+  const std::vector<double> ta_grid = BuildSampleParameters(curve_a, grid_a);
+  const std::vector<double> tb_grid = BuildSampleParameters(curve_b, grid_b);
+  if (ta_grid.size() < 2 || tb_grid.size() < 2)
+    return 0;
+
+  // Per-span bounding boxes, inflated by the sampled chord sag so a curved span cannot
+  // slip past the box test.
+  auto span_boxes = [](const ON_Curve& curve, const std::vector<double>& ts,
+                       std::vector<ON_BoundingBox>& boxes) {
+    boxes.clear();
+    boxes.reserve(ts.size() - 1);
+    for (size_t i = 0; i + 1 < ts.size(); ++i)
+    {
+      ON_BoundingBox box;
+      ON_3dPoint p0 = ON_3dPoint::Origin;
+      ON_3dPoint p1 = ON_3dPoint::Origin;
+      if (!curve.EvPoint(ts[i], p0) || !curve.EvPoint(ts[i + 1], p1))
+        return false;
+      box.Set(p0);
+      box.Set(p1, true);
+      ON_3dPoint mid = ON_3dPoint::Origin;
+      if (curve.EvPoint(0.5 * (ts[i] + ts[i + 1]), mid))
+        box.Set(mid, true);
+      box.m_min -= ON_3dVector(1e-12, 1e-12, 1e-12);
+      box.m_max += ON_3dVector(1e-12, 1e-12, 1e-12);
+      boxes.push_back(box);
+    }
+    return true;
+  };
+
+  std::vector<ON_BoundingBox> boxes_a;
+  std::vector<ON_BoundingBox> boxes_b;
+  if (!span_boxes(curve_a, ta_grid, boxes_a) || !span_boxes(curve_b, tb_grid, boxes_b))
+    return 0;
+
+  std::vector<TL_CurveCurveIntersectionEvent> raw;
+  raw.reserve(16);
+
+  auto try_pair = [&](size_t ia, size_t ib) {
+    const ON_Interval sa(ta_grid[ia], ta_grid[ia + 1]);
+    const ON_Interval sb(tb_grid[ib], tb_grid[ib + 1]);
+    double ta = 0.5 * (sa.Min() + sa.Max());
+    double tb = 0.5 * (sb.Min() + sb.Max());
+    double dist = ON_DBL_MAX;
+    if (!RefineCurveCurvePair(curve_a, curve_b, sa, sb, ta, tb, dist))
+      return;
+    if (!(dist <= tol))
+      return;
+
+    TL_CurveCurveIntersectionEvent ev;
+    ev.param_a = ta;
+    ev.param_b = tb;
+    ev.point_a = curve_a.PointAt(ta);
+    ev.point_b = curve_b.PointAt(tb);
+    ev.is_overlap = false;
+    raw.push_back(ev);
+  };
+
+  // ---- branch and bound over span pairs -------------------------------------
+  struct Task
+  {
+    int depth = 0;
+    size_t ia = 0;
+    size_t ib = 0;
+    ON_Interval sa;
+    ON_Interval sb;
+  };
+
+  std::vector<Task> stack;
+  stack.reserve(256);
+  for (size_t ia = 0; ia + 1 < ta_grid.size(); ++ia)
+  {
+    for (size_t ib = 0; ib + 1 < tb_grid.size(); ++ib)
+    {
+      if (boxes_a[ia].MinimumDistanceTo(boxes_b[ib]) <= tol)
+        stack.push_back({ 0, ia, ib, ON_Interval(ta_grid[ia], ta_grid[ia + 1]),
+                          ON_Interval(tb_grid[ib], tb_grid[ib + 1]) });
+    }
+  }
+
+  const int max_depth = 6;
+  while (!stack.empty())
+  {
+    const Task task = stack.back();
+    stack.pop_back();
+
+    if (task.depth >= max_depth)
+    {
+      const size_t ia = std::min(task.ia, boxes_a.size() - 1);
+      const size_t ib = std::min(task.ib, boxes_b.size() - 1);
+      try_pair(ia, ib);
+      continue;
+    }
+
+    // Split the wider normalised interval, keep both children when their boxes are close.
+    const double width_a = (task.sa.Max() - task.sa.Min()) / std::max(1e-30, dom_a.Length());
+    const double width_b = (task.sb.Max() - task.sb.Min()) / std::max(1e-30, dom_b.Length());
+    const bool split_a = (width_a >= width_b);
+
+    ON_Interval first_a = task.sa;
+    ON_Interval second_a = task.sa;
+    ON_Interval first_b = task.sb;
+    ON_Interval second_b = task.sb;
+    if (split_a)
+    {
+      const double mid = 0.5 * (task.sa.Min() + task.sa.Max());
+      first_a = ON_Interval(task.sa.Min(), mid);
+      second_a = ON_Interval(mid, task.sa.Max());
+    }
+    else
+    {
+      const double mid = 0.5 * (task.sb.Min() + task.sb.Max());
+      first_b = ON_Interval(task.sb.Min(), mid);
+      second_b = ON_Interval(mid, task.sb.Max());
+    }
+
+    auto child_box = [&](const ON_Curve& curve, const ON_Interval& span) {
+      ON_BoundingBox box;
+      ON_3dPoint p = ON_3dPoint::Origin;
+      for (int k = 0; k <= 2; ++k)
+      {
+        const double t = span.ParameterAt(0.5 * k);
+        if (curve.EvPoint(t, p))
+          box.Set(p, box.IsValid());
+      }
+      return box;
+    };
+
+    const ON_BoundingBox other_a = split_a ? child_box(curve_a, first_a) : boxes_a[task.ia];
+    const ON_BoundingBox other_b = split_a ? boxes_b[task.ib] : child_box(curve_b, first_b);
+
+    if (split_a)
+    {
+      const ON_BoundingBox ba = child_box(curve_a, first_a);
+      if (ba.MinimumDistanceTo(other_b) <= tol)
+        stack.push_back({ task.depth + 1, task.ia, task.ib, first_a, task.sb });
+      const ON_BoundingBox bb = child_box(curve_a, second_a);
+      if (bb.MinimumDistanceTo(other_b) <= tol)
+        stack.push_back({ task.depth + 1, task.ia, task.ib, second_a, task.sb });
+    }
+    else
+    {
+      const ON_BoundingBox ba = child_box(curve_b, first_b);
+      if (other_a.MinimumDistanceTo(ba) <= tol)
+        stack.push_back({ task.depth + 1, task.ia, task.ib, task.sa, first_b });
+      const ON_BoundingBox bb = child_box(curve_b, second_b);
+      if (other_a.MinimumDistanceTo(bb) <= tol)
+        stack.push_back({ task.depth + 1, task.ia, task.ib, task.sa, second_b });
+    }
+  }
+
+  if (raw.empty())
+    return 0;
+
+  const double diag = box_a.IsValid() ? box_a.Diagonal().Length() : 1.0;
+  MergeCurveCurveEvents(raw, dom_a.Length(), std::max(2.0 * tol, 1e-6 * diag));
+
+  // Closed curves report the seam twice; fold t_max onto t_min.
+  const bool closed_a = curve_a.IsClosed();
+  const double seam_tol = std::max(1e-13, dom_a.Length() * 1e-9);
+  std::vector<TL_CurveCurveIntersectionEvent> emitted;
+  emitted.reserve(raw.size());
+  for (auto ev : raw)
+  {
+    if (closed_a && std::fabs(ev.param_a - dom_a.Max()) <= seam_tol)
+    {
+      ev.param_a = dom_a.Min();
+      ev.point_a = curve_a.PointAt(dom_a.Min());
+    }
+    bool duplicate = false;
+    for (const auto& kept : emitted)
+    {
+      if (kept.point_a.DistanceTo(ev.point_a) <= std::max(2.0 * tol, 1e-6 * diag))
+      {
+        duplicate = true;
+        break;
+      }
+    }
+    if (!duplicate)
+      emitted.push_back(ev);
+  }
+
+  for (const auto& ev : emitted)
+    events.Append(ev);
+  return events.Count();
+}
+
+TL_FUNCTION int TL_IntersectCurvesByGrid(
+  const ON_Curve& curve_a,
+  const ON_Curve& curve_b,
+  double tolerance,
+  ON_SimpleArray<TL_CurveCurveIntersectionEvent>& events
+)
+{
+  events.SetCount(0);
+
+  const ON_Interval dom_a = curve_a.Domain();
+  const ON_Interval dom_b = curve_b.Domain();
+  if (!dom_a.IsIncreasing() || !dom_b.IsIncreasing())
+    return 0;
+
+  const double tol = (tolerance > 0.0 && ON_IsValid(tolerance)) ? tolerance : ON_ZERO_TOLERANCE;
+
+  ON_BoundingBox box_a;
+  ON_BoundingBox box_b;
+  if (curve_a.GetBoundingBox(box_a, false) && curve_b.GetBoundingBox(box_b, false))
+  {
+    if (box_a.IsValid() && box_b.IsValid() && box_a.MinimumDistanceTo(box_b) > tol)
+      return 0;
+  }
+
+  // Fixed grid, no recursion: this is deliberately a different algorithm.
+  const int count_a = std::max(32, curve_a.SpanCount() * 12);
+  const int count_b = std::max(32, curve_b.SpanCount() * 12);
+  const std::vector<double> ts = BuildSampleParameters(curve_a, count_a);
+  const std::vector<double> ss = BuildSampleParameters(curve_b, count_b);
+  if (ts.size() < 2 || ss.size() < 2)
+    return 0;
+
+  std::vector<ON_3dPoint> pa(ts.size());
+  std::vector<ON_3dPoint> pb(ss.size());
+  for (size_t i = 0; i < ts.size(); ++i)
+    if (!curve_a.EvPoint(ts[i], pa[i]))
+      return 0;
+  for (size_t j = 0; j < ss.size(); ++j)
+    if (!curve_b.EvPoint(ss[j], pb[j]))
+      return 0;
+
+  // Chord lengths give the rigorous triangle-inequality slack for every cell.
+  std::vector<double> cha(ts.size() - 1, 0.0);
+  for (size_t i = 0; i + 1 < ts.size(); ++i)
+    cha[i] = pa[i].DistanceTo(pa[i + 1]);
+  std::vector<double> chb(ss.size() - 1, 0.0);
+  for (size_t j = 0; j + 1 < ss.size(); ++j)
+    chb[j] = pb[j].DistanceTo(pb[j + 1]);
+
+  std::vector<TL_CurveCurveIntersectionEvent> raw;
+  raw.reserve(16);
+
+  for (size_t i = 0; i + 1 < ts.size(); ++i)
+  {
+    for (size_t j = 0; j + 1 < ss.size(); ++j)
+    {
+      const double corner_min = std::min(std::min(pa[i].DistanceTo(pb[j]), pa[i].DistanceTo(pb[j + 1])),
+                                         std::min(pa[i + 1].DistanceTo(pb[j]),
+                                                  pa[i + 1].DistanceTo(pb[j + 1])));
+      if (corner_min - cha[i] - chb[j] > tol)
+        continue;   // provably clear
+
+      const ON_Interval sa(ts[i], ts[i + 1]);
+      const ON_Interval sb(ss[j], ss[j + 1]);
+      double ta = 0.5 * (sa.Min() + sa.Max());
+      double tb = 0.5 * (sb.Min() + sb.Max());
+      double dist = ON_DBL_MAX;
+      if (!RefineCurveCurvePair(curve_a, curve_b, sa, sb, ta, tb, dist))
+        continue;
+      if (!(dist <= tol))
+        continue;
+
+      TL_CurveCurveIntersectionEvent ev;
+      ev.param_a = ta;
+      ev.param_b = tb;
+      ev.point_a = curve_a.PointAt(ta);
+      ev.point_b = curve_b.PointAt(tb);
+      ev.is_overlap = false;
+      raw.push_back(ev);
+    }
+  }
+
+  if (raw.empty())
+    return 0;
+
+  const double diag = box_a.IsValid() ? box_a.Diagonal().Length() : 1.0;
+  MergeCurveCurveEvents(raw, dom_a.Length(), std::max(2.0 * tol, 1e-6 * diag));
+
+  for (const auto& ev : raw)
+    events.Append(ev);
+  return events.Count();
+}
+
+// ============================================================================
+// Surface x Surface intersection -- seed discovery + predictor/corrector marching
+// ============================================================================
+
+namespace {
+
+constexpr int kSSXMaxCorrectorSteps = 24;
+
+/** One point of an SSX trace: the 3D point plus its parameters on both surfaces. */
+struct SSXNode
+{
+  double ua = 0.0;
+  double va = 0.0;
+  double ub = 0.0;
+  double vb = 0.0;
+  ON_3dPoint point = ON_3dPoint::Origin;
+};
+
+bool EvalSurfaceFrame(const ON_Surface& surface, double u, double v, ON_3dPoint& point,
+                      ON_3dVector& du, ON_3dVector& dv)
+{
+  if (!ON_IsValid(u) || !ON_IsValid(v))
+    return false;
+  if (!surface.EvPoint(u, v, point))
+    return false;
+  if (!surface.Ev1Der(u, v, point, du, dv))
+    return false;
+  return true;
+}
+
+/** Clamp to the surface domain, or wrap when that direction is periodic. */
+double ClampOrWrap(const ON_Surface& surface, int dir, double t)
+{
+  const ON_Interval dom = surface.Domain(dir);
+  if (!dom.IsIncreasing())
+    return t;
+  if (surface.IsClosed(dir))
+  {
+    const double length = dom.Length();
+    double wrapped = std::fmod(t - dom.Min(), length);
+    if (wrapped < 0.0)
+      wrapped += length;
+    return dom.Min() + wrapped;
+  }
+  return std::clamp(t, dom.Min(), dom.Max());
+}
+
+/**
+ * Minimum-norm 4D Gauss-Newton corrector.
+ *
+ * Solves the under-determined 3x4 system  J dx = -r  with  dx = -J^T (J J^T + lam I)^-1 r.
+ * The regularisation lam is scaled by the trace so that near-tangential configurations
+ * (where J J^T becomes singular) degrade gracefully instead of blowing up.
+ */
+bool CorrectSSXNode(const ON_Surface& surface_a, const ON_Surface& surface_b, SSXNode& node,
+                    double tol)
+{
+  const double target = std::max(tol, 1e-14);
+
+  for (int iter = 0; iter < kSSXMaxCorrectorSteps; ++iter)
+  {
+    ON_3dPoint pa, pb;
+    ON_3dVector au, av, bu, bv;
+    if (!EvalSurfaceFrame(surface_a, node.ua, node.va, pa, au, av))
+      return false;
+    if (!EvalSurfaceFrame(surface_b, node.ub, node.vb, pb, bu, bv))
+      return false;
+
+    const ON_3dVector r = pa - pb;
+    const double gap = r.Length();
+    if (gap <= target)
+    {
+      node.point = 0.5 * (pa + pb);
+      return true;
+    }
+
+    // J = [au, av, -bu, -bv]  (3x4)
+    const ON_3dVector cols[4] = { au, av, -bu, -bv };
+
+    // M = J J^T  (3x3)
+    double m[3][3] = { { 0, 0, 0 }, { 0, 0, 0 }, { 0, 0, 0 } };
+    for (int i = 0; i < 4; ++i)
+    {
+      for (int a = 0; a < 3; ++a)
+      {
+        for (int b = 0; b < 3; ++b)
+          m[a][b] += cols[i][a] * cols[i][b];
+      }
+    }
+
+    const double trace = m[0][0] + m[1][1] + m[2][2];
+    const double lam = 1e-12 * std::max(trace, 1e-30);
+    m[0][0] += lam;
+    m[1][1] += lam;
+    m[2][2] += lam;
+
+    // Solve M y = r  (Cramer, 3x3)
+    const double det =
+      m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) -
+      m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) +
+      m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+    if (!ON_IsValid(det) || std::fabs(det) <= 1e-300)
+      return false;
+
+    double y[3] = { 0.0, 0.0, 0.0 };
+    for (int c = 0; c < 3; ++c)
+    {
+      double mv[3][3];
+      for (int a = 0; a < 3; ++a)
+        for (int b = 0; b < 3; ++b)
+          mv[a][b] = (b == c) ? r[a] : m[a][b];
+      y[c] = (mv[0][0] * (mv[1][1] * mv[2][2] - mv[1][2] * mv[2][1]) -
+              mv[0][1] * (mv[1][0] * mv[2][2] - mv[1][2] * mv[2][0]) +
+              mv[0][2] * (mv[1][0] * mv[2][1] - mv[1][1] * mv[2][0])) / det;
+    }
+
+    double dx[4] = { 0.0, 0.0, 0.0, 0.0 };
+    for (int i = 0; i < 4; ++i)
+      dx[i] = -(cols[i].x * y[0] + cols[i].y * y[1] + cols[i].z * y[2]);
+
+    // Armijo backtracking.
+    double alpha = 1.0;
+    bool improved = false;
+    SSXNode candidate = node;
+    for (int ls = 0; ls < 16; ++ls)
+    {
+      candidate.ua = ClampOrWrap(surface_a, 0, node.ua + alpha * dx[0]);
+      candidate.va = ClampOrWrap(surface_a, 1, node.va + alpha * dx[1]);
+      candidate.ub = ClampOrWrap(surface_b, 0, node.ub + alpha * dx[2]);
+      candidate.vb = ClampOrWrap(surface_b, 1, node.vb + alpha * dx[3]);
+
+      ON_3dPoint ca, cb;
+      ON_3dVector du, dv;
+      if (EvalSurfaceFrame(surface_a, candidate.ua, candidate.va, ca, du, dv) &&
+          EvalSurfaceFrame(surface_b, candidate.ub, candidate.vb, cb, du, dv))
+      {
+        if ((ca - cb).Length() < gap)
+        {
+          improved = true;
+          break;
+        }
+      }
+      alpha *= 0.5;
+    }
+    if (!improved)
+      return gap <= std::max(target, 1e-9);
+
+    node = candidate;
+  }
+
+  ON_3dPoint pa, pb;
+  ON_3dVector du, dv;
+  if (EvalSurfaceFrame(surface_a, node.ua, node.va, pa, du, dv) &&
+      EvalSurfaceFrame(surface_b, node.ub, node.vb, pb, du, dv))
+  {
+    node.point = 0.5 * (pa + pb);
+    return (pa - pb).Length() <= std::max(target, 1e-9);
+  }
+  return false;
+}
+
+/** 3D intersection direction of two surfaces at a point (unit); false when tangential. */
+bool SSXTangent(const ON_Surface& surface_a, const ON_Surface& surface_b, const SSXNode& node,
+                ON_3dVector& tangent)
+{
+  ON_3dPoint p;
+  ON_3dVector au, av, bu, bv;
+  if (!EvalSurfaceFrame(surface_a, node.ua, node.va, p, au, av))
+    return false;
+  if (!EvalSurfaceFrame(surface_b, node.ub, node.vb, p, bu, bv))
+    return false;
+
+  const ON_3dVector na = ON_CrossProduct(au, av);
+  const ON_3dVector nb = ON_CrossProduct(bu, bv);
+  tangent = ON_CrossProduct(na, nb);
+  const double len = tangent.Length();
+  if (!(len > 1e-12))
+    return false;
+  tangent = tangent / len;
+  return true;
+}
+
+/**
+ * Convert a 3D step into parameter steps on one surface by solving the first
+ * fundamental form  [[E,F],[F,G]] [du,dv]^T = [dP.Su, dP.Sv]^T.
+ */
+bool ParamStepForDelta(const ON_Surface& surface, double u, double v, const ON_3dVector& delta,
+                       double& du_out, double& dv_out)
+{
+  ON_3dPoint p;
+  ON_3dVector su, sv;
+  if (!EvalSurfaceFrame(surface, u, v, p, su, sv))
+    return false;
+
+  const double e = ON_DotProduct(su, su);
+  const double f = ON_DotProduct(su, sv);
+  const double g = ON_DotProduct(sv, sv);
+  const double rhs_u = ON_DotProduct(delta, su);
+  const double rhs_v = ON_DotProduct(delta, sv);
+
+  const double det = e * g - f * f;
+  if (!(std::fabs(det) > 1e-20))
+    return false;
+
+  du_out = (g * rhs_u - f * rhs_v) / det;
+  dv_out = (e * rhs_v - f * rhs_u) / det;
+  return ON_IsValid(du_out) && ON_IsValid(dv_out);
+}
+
+/** March from `start` in one direction until the domain ends or the loop closes. */
+std::vector<SSXNode> MarchSSX(const ON_Surface& surface_a, const ON_Surface& surface_b,
+                              const SSXNode& start, const ON_3dVector& direction, double step,
+                              double tol, bool allow_close, bool& closed_out)
+{
+  closed_out = false;
+  std::vector<SSXNode> trace;
+  trace.push_back(start);
+  const char* stop_reason = "max_steps";
+
+  SSXNode current = start;
+  const int max_steps = 4000;
+  double current_step = step;
+  // Follow the trace by continuity, not by a fixed world direction: a periodic surface
+  // flips the sign of its partial derivative across the seam, which flips N_a x N_b and
+  // would send a fixed-direction march back down the branch it just walked.
+  ON_3dVector last_advance = direction;
+
+  for (int i = 0; i < max_steps; ++i)
+  {
+    SSXNode next = current;
+    ON_3dVector tangent;
+    if (!SSXTangent(surface_a, surface_b, current, tangent))
+    {
+      stop_reason = "tangent";
+      break;
+    }
+
+    ON_3dVector aligned = tangent;
+    if (ON_DotProduct(aligned, last_advance) < 0.0)
+      aligned = -aligned;
+    const ON_3dVector delta = current_step * aligned;
+    double dua = 0.0, dva = 0.0, dub = 0.0, dvb = 0.0;
+    if (!ParamStepForDelta(surface_a, current.ua, current.va, delta, dua, dva))
+    {
+      stop_reason = "paramstep_a";
+      break;
+    }
+    if (!ParamStepForDelta(surface_b, current.ub, current.vb, delta, dub, dvb))
+    {
+      stop_reason = "paramstep_b";
+      break;
+    }
+
+    const double next_ua = current.ua + dua;
+    const double next_va = current.va + dva;
+    const double next_ub = current.ub + dub;
+    const double next_vb = current.vb + dvb;
+
+    // Leave the domain: the branch ends here.
+    auto outside = [](const ON_Surface& s, int dir, double t) {
+      const ON_Interval dom = s.Domain(dir);
+      if (s.IsClosed(dir))
+        return false;
+      return t < dom.Min() || t > dom.Max();
+    };
+    if (outside(surface_a, 0, next_ua) || outside(surface_a, 1, next_va) ||
+        outside(surface_b, 0, next_ub) || outside(surface_b, 1, next_vb))
+    {
+      stop_reason = "domain_exit";
+      break;
+    }
+
+    next.ua = ClampOrWrap(surface_a, 0, next_ua);
+    next.va = ClampOrWrap(surface_a, 1, next_va);
+    next.ub = ClampOrWrap(surface_b, 0, next_ub);
+    next.vb = ClampOrWrap(surface_b, 1, next_vb);
+
+    if (!CorrectSSXNode(surface_a, surface_b, next, tol))
+    {
+      stop_reason = "corrector";
+      break;
+    }
+
+    // Stop when the corrector stood still (tangential contact / fold).
+    if (next.point.DistanceTo(current.point) <= 1e-3 * step)
+    {
+      stop_reason = "stall";
+      break;
+    }
+
+    // Keep the arc-length spacing honest: if the corrector moved the point further or
+    // less than requested, rescale the next prediction instead of letting the error
+    // accumulate (accumulated drift is what made the loop miss its own start).
+    const double advanced = next.point.DistanceTo(current.point);
+    if (advanced > 1e-12)
+    {
+      current_step = std::clamp(current_step * (step / advanced), 0.5 * step, 1.5 * step);
+      last_advance = (next.point - current.point) / advanced;
+    }
+
+    trace.push_back(next);
+
+    if (allow_close && trace.size() > 24)
+    {
+      // Return-to-start closes the loop; touching an older interior sample means the
+      // trace reached a part it already covered, which also ends the march.
+      size_t touch = trace.size();
+      for (size_t k = 0; k + 12 < trace.size(); ++k)
+      {
+        if (trace[k].point.DistanceTo(next.point) <= 2.0 * step)
+        {
+          touch = k;
+          break;
+        }
+      }
+      if (0 == touch)
+      {
+        closed_out = true;
+        stop_reason = "closed";
+        trace.pop_back();          // the closing sample duplicates trace[0]
+        break;
+      }
+      if (touch < trace.size())
+      {
+        stop_reason = "self_touch";
+        trace.resize(touch + 1);
+        break;
+      }
+    }
+
+    current = next;
+  }
+
+  if (std::getenv("OPENTL_SSX_DEBUG") != nullptr)
+  {
+    std::printf("[ssx] march steps=%zu stop=%s dist_to_start=%.6f step=%.6f closed=%d\n",
+                trace.size() - 1, stop_reason,
+                trace.back().point.DistanceTo(start.point), step, static_cast<int>(closed_out));
+  }
+
+  return trace;
+}
+
+/**
+ * Locate the knot span containing `t` (Piegl & Tiller A2.1).  `knots` holds
+ * `n_cv + degree + 1` values; the returned span is clamped to `[degree, n_cv - 1]`.
+ */
+bool FindKnotSpan(const std::vector<double>& knots, int n_cv, int degree, double t, int& span)
+{
+  const int last = n_cv - 1;
+  if (last < degree)
+    return false;
+  if (t <= knots[static_cast<size_t>(degree)])
+  {
+    span = degree;
+    return true;
+  }
+  if (t >= knots[static_cast<size_t>(last + 1)])
+  {
+    span = last;
+    return true;
+  }
+
+  int low = degree;
+  int high = last + 1;
+  int mid = (low + high) / 2;
+  while (t < knots[static_cast<size_t>(mid)] || t >= knots[static_cast<size_t>(mid + 1)])
+  {
+    if (t < knots[static_cast<size_t>(mid)])
+      high = mid;
+    else
+      low = mid;
+    mid = (low + high) / 2;
+    if (high - low <= 1)
+    {
+      mid = low;
+      break;
+    }
+  }
+  span = std::clamp(mid, degree, last);
+  return true;
+}
+
+/**
+ * Non-zero B-spline basis values at `t` (Piegl & Tiller A2.2), written to
+ * `basis[0..degree]` for control points `span - degree .. span`.
+ */
+void BasisFunctions(const double* knots, int degree, int span, double t, double* basis)
+{
+  double left[16] = { 0.0 };
+  double right[16] = { 0.0 };
+  basis[0] = 1.0;
+
+  for (int j = 1; j <= degree; ++j)
+  {
+    left[j] = t - knots[span + 1 - j];
+    right[j] = knots[span + j] - t;
+    double saved = 0.0;
+    for (int r = 0; r < j; ++r)
+    {
+      const double denominator = right[r + 1] + left[j - r];
+      const double temp = (std::fabs(denominator) > 1e-300) ? basis[r] / denominator : 0.0;
+      basis[r] = saved + right[r + 1] * temp;
+      saved = left[j - r] * temp;
+    }
+    basis[j] = saved;
+  }
+}
+
+/** Dense Gaussian elimination with partial pivoting; destroys `a`. */
+bool SolveDense(std::vector<double>& a, std::vector<double>& b, int n)
+{
+  for (int col = 0; col < n; ++col)
+  {
+    int pivot = col;
+    double best = std::fabs(a[static_cast<size_t>(col) * n + col]);
+    for (int row = col + 1; row < n; ++row)
+    {
+      const double v = std::fabs(a[static_cast<size_t>(row) * n + col]);
+      if (v > best)
+      {
+        best = v;
+        pivot = row;
+      }
+    }
+    if (!(best > 1e-300))
+      return false;
+
+    if (pivot != col)
+    {
+      for (int k = 0; k < n; ++k)
+        std::swap(a[static_cast<size_t>(pivot) * n + k], a[static_cast<size_t>(col) * n + k]);
+      std::swap(b[static_cast<size_t>(pivot)], b[static_cast<size_t>(col)]);
+    }
+
+    const double diag = a[static_cast<size_t>(col) * n + col];
+    for (int row = col + 1; row < n; ++row)
+    {
+      const double factor = a[static_cast<size_t>(row) * n + col] / diag;
+      if (0.0 == factor)
+        continue;
+      for (int k = col; k < n; ++k)
+        a[static_cast<size_t>(row) * n + k] -= factor * a[static_cast<size_t>(col) * n + k];
+      b[static_cast<size_t>(row)] -= factor * b[static_cast<size_t>(col)];
+    }
+  }
+
+  for (int row = n - 1; row >= 0; --row)
+  {
+    double sum = b[static_cast<size_t>(row)];
+    for (int k = row + 1; k < n; ++k)
+      sum -= a[static_cast<size_t>(row) * n + k] * b[static_cast<size_t>(k)];
+    const double diag = a[static_cast<size_t>(row) * n + row];
+    if (!(std::fabs(diag) > 1e-300))
+      return false;
+    b[static_cast<size_t>(row)] = sum / diag;
+  }
+  return true;
+}
+
+/**
+ * Interpolate an ordered point list with a clamped cubic NURBS curve.
+ *
+ * Chord-length parameters + the Piegl & Tiller (eq. 9.8) knot averaging rule, then a
+ * dense solve of the (n x n) collocation system.  Degree drops for short traces.
+ */
+ON_NurbsCurve* FitTraceToNurbs(const std::vector<ON_3dPoint>& points)
+{
+  const int n = static_cast<int>(points.size());
+  if (n < 2)
+    return nullptr;
+
+  const int degree = (n >= 4) ? 3 : (n - 1);
+  if (degree < 1 || degree + 1 > 16)
+    return nullptr;
+
+  std::vector<double> chord(static_cast<size_t>(n), 0.0);
+  for (int i = 1; i < n; ++i)
+    chord[static_cast<size_t>(i)] =
+      chord[static_cast<size_t>(i - 1)] +
+      points[static_cast<size_t>(i)].DistanceTo(points[static_cast<size_t>(i - 1)]);
+  const double total = chord[static_cast<size_t>(n - 1)];
+  if (!(total > 1e-12))
+    return nullptr;
+
+  for (int i = 0; i < n; ++i)
+    chord[static_cast<size_t>(i)] /= total;   // normalised [0,1]
+
+  // Clamped knot vector: p+1 zeros, averaged interior knots, p+1 ones.
+  std::vector<double> knots(static_cast<size_t>(n + degree + 1), 0.0);
+  for (int i = 0; i < n + degree + 1; ++i)
+    knots[static_cast<size_t>(i)] = (i > n) ? 1.0 : 0.0;
+  for (int j = 1; j <= n - degree - 1; ++j)
+  {
+    double sum = 0.0;
+    for (int k = j; k <= j + degree - 1; ++k)
+      sum += chord[static_cast<size_t>(k)];
+    knots[static_cast<size_t>(j + degree)] = sum / degree;
+  }
+  for (int i = 0; i <= degree; ++i)
+  {
+    knots[static_cast<size_t>(i)] = 0.0;
+    knots[static_cast<size_t>(n + i)] = 1.0;
+  }
+  for (int i = 1; i < n + degree + 1; ++i)
+    if (knots[static_cast<size_t>(i)] < knots[static_cast<size_t>(i - 1)])
+      knots[static_cast<size_t>(i)] = knots[static_cast<size_t>(i - 1)];
+
+  // ON_NurbsCurve stores KnotCount() == CVCount + Order - 2 knots: the duplicated
+  // clamped end knots are implicit, so only indices 1 .. n+degree-1 are settable.
+  ON_NurbsCurve shaped(3, false, degree + 1, n);
+  if (shaped.KnotCount() != n + degree - 1)
+    return nullptr;
+  if (!shaped.ReserveKnotCapacity(n + degree - 1))
+    return nullptr;
+  for (int i = 1; i < n + degree; ++i)
+  {
+    if (!shaped.SetKnot(i - 1, knots[static_cast<size_t>(i)]))
+      return nullptr;
+  }
+
+  std::vector<double> matrix(static_cast<size_t>(n) * n, 0.0);
+  std::vector<double> rhs_x(static_cast<size_t>(n), 0.0);
+  std::vector<double> rhs_y(static_cast<size_t>(n), 0.0);
+  std::vector<double> rhs_z(static_cast<size_t>(n), 0.0);
+
+  for (int i = 0; i < n; ++i)
+  {
+    int span = 0;
+    if (!FindKnotSpan(knots, n, degree, chord[static_cast<size_t>(i)], span))
+      return nullptr;
+    double basis[16] = { 0.0 };
+    BasisFunctions(knots.data(), degree, span, chord[static_cast<size_t>(i)], basis);
+    for (int k = 0; k <= degree; ++k)
+    {
+      const int column = span - degree + k;
+      if (column < 0 || column >= n)
+        continue;
+      matrix[static_cast<size_t>(i) * n + column] = basis[k];
+    }
+    rhs_x[static_cast<size_t>(i)] = points[static_cast<size_t>(i)].x;
+    rhs_y[static_cast<size_t>(i)] = points[static_cast<size_t>(i)].y;
+    rhs_z[static_cast<size_t>(i)] = points[static_cast<size_t>(i)].z;
+  }
+
+  std::vector<double> ax = matrix, ay = matrix, az = matrix;
+  if (!SolveDense(ax, rhs_x, n) || !SolveDense(ay, rhs_y, n) || !SolveDense(az, rhs_z, n))
+    return nullptr;
+
+  for (int i = 0; i < n; ++i)
+  {
+    if (!shaped.SetCV(i, ON_3dPoint(rhs_x[static_cast<size_t>(i)], rhs_y[static_cast<size_t>(i)],
+                                    rhs_z[static_cast<size_t>(i)])))
+      return nullptr;
+  }
+
+  if (!shaped.IsValid())
+    return nullptr;
+  ON_NurbsCurve* result = new ON_NurbsCurve(shaped);
+  result->SetDomain(0.0, total);   // arc-length-ish parameter, like TL_DeformableArc2
+  return result;
+}
+
+} // anonymous namespace
+
+TL_FUNCTION void TL_FreeSSXBranches(std::vector<TL_SurfaceSurfaceIntersectionBranch>& branches)
+{
+  for (auto& branch : branches)
+  {
+    delete branch.curve_3d;
+    branch.curve_3d = nullptr;
+  }
+  branches.clear();
+}
+
+TL_FUNCTION int TL_SurfaceSurfaceIntersect(
+  const ON_Surface& surface_a,
+  const ON_Surface& surface_b,
+  double tolerance,
+  std::vector<TL_SurfaceSurfaceIntersectionBranch>& branches)
+{
+  TL_FreeSSXBranches(branches);
+
+  const double tol = (tolerance > 0.0 && ON_IsValid(tolerance)) ? tolerance : 1e-6;
+
+  ON_BoundingBox box_a;
+  ON_BoundingBox box_b;
+  if (!surface_a.GetBoundingBox(box_a) || !surface_b.GetBoundingBox(box_b))
+    return 0;
+  if (!box_a.IsValid() || !box_b.IsValid())
+    return 0;
+  if (box_a.MinimumDistanceTo(box_b) > std::max(tol, 1e-9))
+    return 0;
+
+  const double diag = std::max(box_a.Diagonal().Length(), box_b.Diagonal().Length());
+  const double seed_step = std::max(tol * 10.0, 1e-9);
+
+  // ---- seed discovery: sample both parameter grids and correct close pairs -----
+  const int grid_u = 24;
+  const int grid_v = 24;
+  struct Sample
+  {
+    double u = 0.0;
+    double v = 0.0;
+    ON_3dPoint point = ON_3dPoint::Origin;
+  };
+
+  std::vector<Sample> samples_a;
+  std::vector<Sample> samples_b;
+  const ON_Interval da0 = surface_a.Domain(0);
+  const ON_Interval da1 = surface_a.Domain(1);
+  const ON_Interval db0 = surface_b.Domain(0);
+  const ON_Interval db1 = surface_b.Domain(1);
+  if (!da0.IsIncreasing() || !da1.IsIncreasing() || !db0.IsIncreasing() || !db1.IsIncreasing())
+    return 0;
+
+  for (int i = 0; i <= grid_u; ++i)
+  {
+    for (int j = 0; j <= grid_v; ++j)
+    {
+      Sample s;
+      s.u = da0.ParameterAt(static_cast<double>(i) / grid_u);
+      s.v = da1.ParameterAt(static_cast<double>(j) / grid_v);
+      if (surface_a.EvPoint(s.u, s.v, s.point))
+        samples_a.push_back(s);
+    }
+  }
+  for (int i = 0; i <= grid_u; ++i)
+  {
+    for (int j = 0; j <= grid_v; ++j)
+    {
+      Sample s;
+      s.u = db0.ParameterAt(static_cast<double>(i) / grid_u);
+      s.v = db1.ParameterAt(static_cast<double>(j) / grid_v);
+      if (surface_b.EvPoint(s.u, s.v, s.point))
+        samples_b.push_back(s);
+    }
+  }
+  if (samples_a.empty() || samples_b.empty())
+    return 0;
+
+  const double cell = std::max(1e-9, diag / static_cast<double>(grid_u));
+  const double seed_radius = 2.5 * cell;
+
+  std::vector<SSXNode> seeds;
+
+  auto add_seed = [&](double ua, double va, double ub, double vb) {
+    SSXNode node;
+    node.ua = ua;
+    node.va = va;
+    node.ub = ub;
+    node.vb = vb;
+    if (!CorrectSSXNode(surface_a, surface_b, node, tol))
+      return;
+    for (const SSXNode& kept : seeds)
+    {
+      if (kept.point.DistanceTo(node.point) <= seed_step)
+        return;
+    }
+    seeds.push_back(node);
+  };
+
+  // Sampling both parameter grids independently only finds seeds when the intersection
+  // happens to fall near a sample of both surfaces (a plane's grid is far too coarse for
+  // that).  Instead project every sample of A onto B (and vice versa) and keep the pairs
+  // whose gap is within one cell: the closest-point projection lands on the trace
+  // whenever the sample is within a cell of it.
+  for (const Sample& sa : samples_a)
+  {
+    double ub = 0.0;
+    double vb = 0.0;
+    if (!TL_GetSurfaceClosestPoint(surface_b, sa.point, &ub, &vb))
+      continue;
+    if (sa.point.DistanceTo(surface_b.PointAt(ub, vb)) > seed_radius)
+      continue;
+    add_seed(sa.u, sa.v, ub, vb);
+  }
+  for (const Sample& sb : samples_b)
+  {
+    double ua = 0.0;
+    double va = 0.0;
+    if (!TL_GetSurfaceClosestPoint(surface_a, sb.point, &ua, &va))
+      continue;
+    if (sb.point.DistanceTo(surface_a.PointAt(ua, va)) > seed_radius)
+      continue;
+    add_seed(ua, va, sb.u, sb.v);
+  }
+
+  if (std::getenv("OPENTL_SSX_DEBUG") != nullptr)
+  {
+    std::printf("[ssx] samples a=%zu b=%zu cell=%.4f seeds=%zu tol=%.3e\n", samples_a.size(),
+                samples_b.size(), cell, seeds.size(), tol);
+  }
+
+  if (seeds.empty())
+    return 0;
+
+  // ---- march every seed that is not already covered by a trace ------------------
+  const double step = std::max(diag / 160.0, 1e-7);
+  std::vector<char> consumed(seeds.size(), 0);
+
+  auto mark_consumed = [&](const std::vector<SSXNode>& trace) {
+    for (size_t s = 0; s < seeds.size(); ++s)
+    {
+      if (consumed[s])
+        continue;
+      for (const SSXNode& node : trace)
+      {
+        if (node.point.DistanceTo(seeds[s].point) <= 1.75 * step)
+        {
+          consumed[s] = 1;
+          break;
+        }
+      }
+    }
+  };
+
+  for (size_t s = 0; s < seeds.size(); ++s)
+  {
+    if (consumed[s])
+      continue;
+
+    ON_3dVector tangent;
+    if (!SSXTangent(surface_a, surface_b, seeds[s], tangent))
+    {
+      consumed[s] = 1;
+      continue;   // tangential contact: no branch to march along
+    }
+
+    bool closed_forward = false;
+    std::vector<SSXNode> forward = MarchSSX(surface_a, surface_b, seeds[s], tangent, step, tol,
+                                            true, closed_forward);
+
+    std::vector<SSXNode> trace;
+    if (closed_forward)
+    {
+      trace = forward;
+    }
+    else
+    {
+      bool closed_backward = false;
+      std::vector<SSXNode> backward = MarchSSX(surface_a, surface_b, seeds[s], -tangent, step, tol,
+                                               false, closed_backward);
+      // backward[0] == seed, so reverse the remainder and append the forward run.
+      trace.reserve(backward.size() + forward.size());
+      for (size_t i = backward.size(); i-- > 1;)
+        trace.push_back(backward[i]);
+      trace.insert(trace.end(), forward.begin(), forward.end());
+    }
+
+    if (trace.size() < 2)
+    {
+      consumed[s] = 1;
+      continue;
+    }
+
+    mark_consumed(trace);
+
+    TL_SurfaceSurfaceIntersectionBranch branch;
+    branch.is_closed = closed_forward;
+    branch.points_3d.Reserve(static_cast<int>(trace.size()));
+    branch.params_a.Reserve(static_cast<int>(trace.size()));
+    branch.params_b.Reserve(static_cast<int>(trace.size()));
+    for (const SSXNode& node : trace)
+    {
+      branch.points_3d.Append(node.point);
+      branch.params_a.Append(ON_2dPoint(node.ua, node.va));
+      branch.params_b.Append(ON_2dPoint(node.ub, node.vb));
+    }
+
+    std::vector<ON_3dPoint> fit_points(trace.size());
+    for (size_t i = 0; i < trace.size(); ++i)
+      fit_points[i] = trace[i].point;
+    // No end-point duplication: the two ends of a closed trace already coincide, and a
+    // zero-length chord would produce a repeated parameter and a singular system.
+
+    branch.curve_3d = FitTraceToNurbs(fit_points);
+
+    // Measure the achieved accuracy against both surfaces.
+    double max_error = 0.0;
+    if (nullptr != branch.curve_3d)
+    {
+      const ON_Interval dom = branch.curve_3d->Domain();
+      for (int k = 0; k <= 24; ++k)
+      {
+        const ON_3dPoint p = branch.curve_3d->PointAt(dom.ParameterAt(k / 24.0));
+        double ua = 0.0, va = 0.0, ub = 0.0, vb = 0.0;
+        if (TL_GetSurfaceClosestPoint(surface_a, p, &ua, &va))
+          max_error = std::max(max_error, p.DistanceTo(surface_a.PointAt(ua, va)));
+        if (TL_GetSurfaceClosestPoint(surface_b, p, &ub, &vb))
+          max_error = std::max(max_error, p.DistanceTo(surface_b.PointAt(ub, vb)));
+      }
+    }
+    branch.max_error = max_error;
+
+    branches.push_back(branch);
+  }
+
+  return static_cast<int>(branches.size());
 }
