@@ -63,3 +63,24 @@ TL_FUNCTION ON_NurbsSurface* TL_LoftCurves(
   const ON_SimpleArray<const ON_Curve*>& sections,
   ON_NurbsSurface* result = nullptr
 );
+
+/**
+ * One-rail sweep: transport `profile` along `rail` and skin the resulting sections.
+ *
+ * - The profile is interpreted in its own XY plane (`p.x` / `p.y`), which is exact for
+ *   planar profiles such as circles and rectangles drawn in the world XY plane.
+ * - Frames are built by **parallel transport** (the previous up vector is projected onto
+ *   the plane perpendicular to the current tangent), so the profile does not spin or
+ *   flip along the rail.  Degenerate tangents fall back to the last valid frame.
+ * - `station_count` is clamped to [2, 256]; the sections are tessellated polyline curves
+ *   and skinned by `TL_LoftCurves`, which interpolates (not linear-skins) in U.
+ *
+ * NOT implemented (still in README §9.1): two-rail sweep, rails with twist/scale laws,
+ * G1/G2 corner blending.  This is an approximation, not the original product's sweep.
+ */
+TL_FUNCTION ON_NurbsSurface* TL_Sweep1Rail(
+  const ON_Curve& rail,
+  const ON_Curve& profile,
+  int station_count = 16,
+  ON_NurbsSurface* result = nullptr
+);

@@ -425,3 +425,96 @@ TL_FUNCTION ON_NurbsSurface* TL_LoftCurves(
 
   return srf;
 }
+
+// ============================================================================
+// TL_Sweep1Rail -- parallel-transport sweep (approximation, see header)
+// ============================================================================
+
+TL_FUNCTION ON_NurbsSurface* TL_Sweep1Rail(
+  const ON_Curve& rail,
+  const ON_Curve& profile,
+  int station_count,
+  ON_NurbsSurface* result
+)
+{
+  const ON_Interval rail_dom = rail.Domain();
+  const ON_Interval prof_dom = profile.Domain();
+  if (!rail_dom.IsIncreasing() || !prof_dom.IsIncreasing())
+    return nullptr;
+
+  const int stations = std::clamp(station_count, 2, 256);
+  // Profile fidelity is bounded by the loft's U control count (<= 64 CVs), so a
+  // finer tessellation than that buys nothing: for R = 2 the residual radial error
+  // is ~ R*(1-cos(pi/64)) ~ 2.4e-3.
+  constexpr int kProfileSamples = 64;
+
+  std::vector<ON_2dPoint> profile_points(static_cast<size_t>(kProfileSamples) + 1);
+  for (int k = 0; k <= kProfileSamples; ++k)
+  {
+    const double s = static_cast<double>(k) / static_cast<double>(kProfileSamples);
+    const ON_3dPoint p = profile.PointAt(prof_dom.ParameterAt(s));
+    profile_points[static_cast<size_t>(k)] = ON_2dPoint(p.x, p.y);
+  }
+  // Closed profile: make the seam exact.
+  if (profile_points.front().DistanceTo(profile_points.back()) <= 1e-9)
+    profile_points.back() = profile_points.front();
+
+  ON_SimpleArray<ON_Curve*> owned;
+  ON_SimpleArray<const ON_Curve*> sections;
+
+  ON_3dVector previous_up(1.0, 0.0, 0.0);
+  bool have_frame = false;
+
+  for (int i = 0; i < stations; ++i)
+  {
+    const double s = static_cast<double>(i) / static_cast<double>(stations - 1);
+    const double t = rail_dom.ParameterAt(s);
+    const ON_3dPoint origin = rail.PointAt(t);
+
+    ON_3dPoint frame_origin = ON_3dPoint::Origin;
+    ON_3dVector tangent = ON_3dVector::ZeroVector;
+    if (!rail.Ev1Der(t, frame_origin, tangent) || !tangent.Unitize())
+    {
+      if (i == 0)
+        return nullptr;
+      tangent = ON_3dVector(0.0, 0.0, 1.0);
+    }
+
+    // Parallel transport: remove the tangential component of the previous up vector.
+    ON_3dVector up = previous_up - tangent * ON_DotProduct(previous_up, tangent);
+    if (!up.Unitize())
+    {
+      // The previous up became parallel to the tangent: pick any perpendicular.
+      const ON_3dVector fallback = (std::fabs(tangent.z) < 0.9) ? ON_3dVector(0.0, 0.0, 1.0)
+                                                                : ON_3dVector(1.0, 0.0, 0.0);
+      up = ON_CrossProduct(tangent, fallback);
+      if (!up.Unitize())
+        return nullptr;
+      if (have_frame)
+        up = previous_up;
+    }
+    previous_up = up;
+    have_frame = true;
+
+    const ON_3dVector across = ON_CrossProduct(tangent, up);
+
+    ON_SimpleArray<ON_3dPoint> points(static_cast<int>(profile_points.size()));
+    for (const ON_2dPoint& p : profile_points)
+      points.Append(origin + up * p.x + across * p.y);
+
+    ON_PolylineCurve* section = new ON_PolylineCurve(points);
+    if (nullptr == section)
+      break;
+    owned.Append(section);
+    sections.Append(section);
+  }
+
+  ON_NurbsSurface* surface = nullptr;
+  if (sections.Count() >= 2)
+    surface = TL_LoftCurves(sections, result);
+
+  for (int i = 0; i < owned.Count(); ++i)
+    delete owned[i];
+
+  return surface;
+}

@@ -444,6 +444,17 @@ bool TL_GetSurfaceClosestPoint(const ON_Surface& surface, const ON_3dPoint& test
 
 ---
 
+#### （j）单轨扫掠 —— `TL_Sweep1Rail`
+
+`ON_NurbsSurface* TL_Sweep1Rail(const ON_Curve& rail, const ON_Curve& profile, int station_count, ON_NurbsSurface* result)`
+
+- **平行传输取帧**：把上一站的 up 向量投影到当前切线的法平面后重新正交化，因此剖面沿轨不会翻转或自旋；切线退化时沿用上一有效帧。
+- **剖面在自己的 XY 平面解释**（`p.x` / `p.y`），对世界 XY 平面内的圆/矩形等平面剖面是精确的。
+- 各站生成折线剖面后交给 `TL_LoftCurves` 做**插值式**蒙皮（U 向为插值而非线性蒙皮）。
+- 精度边界：剖面保真度受 loft 的 U 向控制点数（≤ 64 个 CV）限制；`R = 2` 的圆管半径残差约 `2.4e-3`。测试按 `5e-3` 断言，不掩盖这一点。
+
+**仍未实现**：双轨扫掠（2-rail）、沿轨缩放/扭转律、角部 G1/G2 过渡、偏置曲面。
+
 ### 4.4 四视图（Top / Perspective / Front / Right）
 
 对应 Rhino 模型空间的经典 2×2 布局。这是**内核侧**实现：相机框架、世界↔屏幕投影、屏幕射线（拾取用）、平移/缩放/缩放到适合、确定性 JSON 持久化；**不含渲染与窗口系统**（OpenTL 不产生像素）。
@@ -630,7 +641,7 @@ cmake --build build --config Release -j8
 > | 项目 | 结果 |
 > | --- | --- |
 > | clean build（删除 `build/` 后重新配置） | 通过，0 error；`opentl/src`、`apps`、`tests` 0 warning（其余 warning 均来自 openNURBS/zlib 第三方源码） |
-> | `opentl_tests` | 14 个测试组、641 项检查、0 失败 |
+> | `opentl_tests` | 15 个测试组、742 项检查、0 失败 |
 > | `ctest` | 3/3 通过（`opentl_tests`、`opentl_cli_demo`、`opentl_cli_views`） |
 > | 四视图布局往返 | `opentl_cli --views` 退出码 0，`views.roundtrip=identical` |
 > | CLI 端到端演示 | 退出码 0，`io.roundtrip json_digest_identical=1 3dm_digest_identical=1` |
@@ -907,7 +918,7 @@ MVP 的目标是**打通一条端到端可验证的链路**（几何 → 场景 
 - **曲面求交（SSX）不完整**。当前实现的求交覆盖「线-线 / 线-平面 / 曲线-直线 / 曲线-平面」。**曲面-曲面**只具备 openNURBS 层面的基础能力，缺少 Rhino 级的完整拓扑跟踪：交线在参数域的**分支识别、闭合环检测、奇点/切触穿越、容差传播与接缝缝合**均未实现，因此不能作为布尔运算的可靠前置。
 - **Brep 布尔流水线缺失**。已有的是布尔所需的**分类器**（`TL_Brep::PointIsOnFace` 的 Outside/Inside/Boundary 判定、`TL_ClassifyPointOnBrepFace`）与拓扑工具，但**没有**：面-面分割（`ON_BrepSplitter` 级）、交线嵌入、共面面合并、非流形结果清理、内外壳判定（射线奇偶/绕数）。因此 `TL_Brep` 目前可用于**查询与判定**，不可用于**实体布尔求值**。
 - **网格布尔与 Remesh 未包含**。`TL_MeshSurfaceGrid` 只做规则参数网格；没有自适应细分、特征保持、网格修复（孔洞/自交/翻转法向）。
-- **NURBS 拟合/重建有限**。`TL_LoftCurves` 只处理相容截面；没有曲面拟合（`TL2_FitSurface` 系列）、扫掠（1 rail / 2 rail）、偏置、圆角/倒角。
+- **NURBS 拟合/重建有限**。`TL_LoftCurves` 只处理相容截面；`TL_Sweep1Rail` 提供单轨扫掠（平行传输取帧 + loft 蒙皮，剖面保真度受 64 CV 限制）。仍然**没有**曲面拟合（`TL2_FitSurface` 系列）、双轨扫掠、偏置曲面、圆角/倒角。
 - **SubD 仅一种基元**。`TL_CreateSubDBox` 之外没有 SubD 挤出/桥接/边权重编辑，也没有 SubD → Brep 的精确转换（只有极限曲面求值）。
 - **`RemoveKnots` 是简化版**。以"移除后重拟合误差"为判据，未实现原产品在有理曲线权重扰动、跨接缝节点、曲面双向耦合情形下的完整策略。
 - **数值鲁棒性**：容差是显式参数而非全局模型容差；极端尺度（1e-9 或 1e9 量级）下的求交/最近点可能退化。没有区间算术或多精度回退。

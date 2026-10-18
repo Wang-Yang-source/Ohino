@@ -1773,6 +1773,94 @@ void TestFourViewLayout() {
   EndSection();
 }
 
+
+// ============================================================================
+// 15 - one-rail sweep
+// ============================================================================
+
+void TestSweep1Rail() {
+  BeginSection("one-rail sweep (parallel transport + loft)");
+
+  // ---- straight rail: a circle swept along +Z must be a tube of radius 2 ----
+  {
+    const ON_LineCurve rail(ON_3dPoint(0.0, 0.0, 0.0), ON_3dPoint(0.0, 0.0, 10.0));
+    ON_ArcCurve profile(ON_Circle(ON_Plane::World_xy, 2.0));
+
+    ON_NurbsSurface* swept = TL_Sweep1Rail(rail, profile, 12, nullptr);
+    CHECK(nullptr != swept);
+    if (nullptr != swept) {
+      CHECK(swept->IsValid());
+      const ON_Interval u_dom = swept->Domain(0);
+      const ON_Interval v_dom = swept->Domain(1);
+      CHECK(u_dom.IsIncreasing());
+      CHECK(v_dom.IsIncreasing());
+
+      for (int i = 0; i <= 4; ++i) {
+        const double v = v_dom.ParameterAt(i / 4.0);
+        for (int k = 0; k <= 8; ++k) {
+          const double u = u_dom.ParameterAt(k / 8.0);
+          const ON_3dPoint p = swept->PointAt(u, v);
+          const double radius = std::sqrt(p.x * p.x + p.y * p.y);
+          // The profile is interpolated through 64 chord samples, so the tube is a
+          // chord-accurate approximation of the true cylinder (error ~2.4e-3).
+          CHECK_NEAR(radius, 2.0, 5e-3);
+          CHECK(p.z >= -2e-3 && p.z <= 10.0 + 2e-3);
+        }
+      }
+
+      // The swept surface must span exactly the rail extent.
+      ON_BoundingBox box;
+      CHECK(swept->GetBoundingBox(box));
+      CHECK_NEAR(box.m_min.z, 0.0, 2e-3);
+      CHECK_NEAR(box.m_max.z, 10.0, 2e-3);
+      delete swept;
+    }
+  }
+
+  // ---- curved rail: every surface point stays `profile radius` from the rail ----
+  {
+    ON_ArcCurve rail(ON_Arc(ON_Plane::World_xy, 10.0, ON_PI * 0.5));
+    ON_ArcCurve profile(ON_Circle(ON_Plane::World_xy, 1.0));
+
+    ON_NurbsSurface* swept = TL_Sweep1Rail(rail, profile, 16, nullptr);
+    CHECK(nullptr != swept);
+    if (nullptr != swept) {
+      const ON_Interval u_dom = swept->Domain(0);
+      const ON_Interval v_dom = swept->Domain(1);
+      double worst = 0.0;
+      for (int i = 1; i < 4; ++i) {
+        const double v = v_dom.ParameterAt(i / 4.0);
+        for (int k = 0; k < 8; ++k) {
+          const double u = u_dom.ParameterAt(k / 8.0);
+          const ON_3dPoint p = swept->PointAt(u, v);
+          double s = 0.0;
+          if (!TL_GetCurveClosestPoint(rail, p, &s))
+            continue;
+          const double d = p.DistanceTo(rail.PointAt(s));
+          worst = std::max(worst, std::fabs(d - 1.0));
+        }
+      }
+      CHECK_MSG(worst <= 5e-3, "max radial deviation = " + NumberText(worst));
+      delete swept;
+    }
+  }
+
+  // ---- station_count is clamped, degenerate input rejected ----
+  {
+    ON_LineCurve rail(ON_3dPoint(0.0, 0.0, 0.0), ON_3dPoint(1.0, 0.0, 0.0));
+    ON_ArcCurve profile(ON_Circle(ON_Plane::World_xy, 0.5));
+    ON_NurbsSurface* two = TL_Sweep1Rail(rail, profile, 1, nullptr);
+    CHECK(nullptr != two);   // clamped to 2 stations
+    delete two;
+
+    ON_LineCurve degenerate(ON_3dPoint(0.0, 0.0, 0.0), ON_3dPoint(0.0, 0.0, 0.0));
+    ON_NurbsSurface* bad = TL_Sweep1Rail(degenerate, profile, 8, nullptr);
+    CHECK(nullptr == bad);    // zero-length rail has no domain
+  }
+
+  EndSection();
+}
+
 int main() {
   ON::Begin();
 
@@ -1793,6 +1881,7 @@ int main() {
   Test3dmRoundTrip();
   TestStage3Primitives();
   TestFourViewLayout();
+  TestSweep1Rail();
 
   std::printf("\n=====================\n");
   std::printf("sections=%d checks=%d failures=%d failed_sections=%d\n", g_state.section_index,
