@@ -688,3 +688,175 @@ TL_FUNCTION bool TL_GetSurfaceClosestPoint(
 
   return true;
 }
+
+// ============================================================================
+// TL_GetClosestPoint(ON_Line, ON_Line)  --  tl.dll 0x214670 / 0x214540
+// ============================================================================
+
+namespace {
+
+double ClampSegmentParameter(double t)
+{
+  if (!ON_IsValid(t))
+    return 0.0;
+  return std::clamp(t, 0.0, 1.0);
+}
+
+} // anonymous namespace
+
+TL_FUNCTION bool TL_GetClosestPoint(
+  const ON_Line& line_a,
+  const ON_Line& line_b,
+  double* t_a,
+  double* t_b
+)
+{
+  double a = 0.0;
+  double b = 0.0;
+
+  // 0x1802146ca: try the analytic line-line solve first.
+  const bool analytic = ON_Intersect(line_a, line_b, &a, &b) && ON_IsValid(a) && ON_IsValid(b);
+
+  if (analytic)
+  {
+    // A branch: adopt in-segment solutions; clamp out-of-range ends and re-project.
+    bool clamped = false;
+    if (a < 0.0) { a = 0.0; clamped = true; }
+    else if (a > 1.0) { a = 1.0; clamped = true; }
+    if (b < 0.0) { b = 0.0; clamped = true; }
+    else if (b > 1.0) { b = 1.0; clamped = true; }
+
+    if (clamped)
+    {
+      double s = 0.0;
+      if (line_b.ClosestPointTo(line_a.PointAt(a), &s) && ON_IsValid(s))
+        b = ClampSegmentParameter(s);
+      if (line_a.ClosestPointTo(line_b.PointAt(b), &s) && ON_IsValid(s))
+        a = ClampSegmentParameter(s);
+    }
+  }
+  else
+  {
+    // B branch (0x1802146f0..0x180214829): four endpoint projections.
+    double best_distance = ON_DBL_MAX;
+    double best_a = 0.0;
+    double best_b = 0.0;
+
+    for (int end = 0; end < 2; ++end)
+    {
+      const double ta = static_cast<double>(end);
+      const ON_3dPoint p = line_a.PointAt(ta);
+      double s = 0.0;
+      if (!line_b.ClosestPointTo(p, &s) || !ON_IsValid(s))
+        continue;
+      const double sb = ClampSegmentParameter(s);
+      const double d = p.DistanceTo(line_b.PointAt(sb));
+      if (d < best_distance)
+      {
+        best_distance = d;
+        best_a = ta;
+        best_b = sb;
+      }
+    }
+
+    for (int end = 0; end < 2; ++end)
+    {
+      const double tb = static_cast<double>(end);
+      const ON_3dPoint p = line_b.PointAt(tb);
+      double s = 0.0;
+      if (!line_a.ClosestPointTo(p, &s) || !ON_IsValid(s))
+        continue;
+      const double sa = ClampSegmentParameter(s);
+      const double d = p.DistanceTo(line_a.PointAt(sa));
+      if (d < best_distance)
+      {
+        best_distance = d;
+        best_a = sa;
+        best_b = tb;
+      }
+    }
+
+    // One refinement pass on the winning pair.
+    double s = 0.0;
+    if (line_b.ClosestPointTo(line_a.PointAt(best_a), &s) && ON_IsValid(s))
+      best_b = ClampSegmentParameter(s);
+    if (line_a.ClosestPointTo(line_b.PointAt(best_b), &s) && ON_IsValid(s))
+      best_a = ClampSegmentParameter(s);
+
+    a = best_a;
+    b = best_b;
+  }
+
+  if (nullptr != t_a)
+    *t_a = a;
+  if (nullptr != t_b)
+    *t_b = b;
+
+  // The binary always reports success once a parameter pair is available; only the
+  // null-output guard can skip the writes.
+  return true;
+}
+
+TL_FUNCTION bool TL_GetClosestPoint(
+  const ON_Line& line_a,
+  const ON_Line& line_b,
+  double* t_a,
+  double* t_b,
+  double maximum_distance,
+  const ON_Interval* domain_a,
+  const ON_Interval* domain_b
+)
+{
+  // 0x18021455e..0x1802145fe: both lines are lifted to degree-1 ON_BezierCurve
+  // (dim=3, rational=false, order=2) before the solver runs.
+  ON_BezierCurve bezier_a(3, false, 2);
+  ON_BezierCurve bezier_b(3, false, 2);
+  if (!bezier_a.SetCV(0, line_a.from) || !bezier_a.SetCV(1, line_a.to))
+    return false;
+  if (!bezier_b.SetCV(0, line_b.from) || !bezier_b.SetCV(1, line_b.to))
+    return false;
+
+  double a = 0.0;
+  double b = 0.0;
+  if (!TL_GetClosestPoint(line_a, line_b, &a, &b))
+    return false;
+
+  // Sub-domain clamping (the ON_Interval* arguments of the Bezier overload).
+  if (nullptr != domain_a && domain_a->IsIncreasing())
+    a = std::clamp(a, domain_a->Min(), domain_a->Max());
+  else
+    a = ClampSegmentParameter(a);
+
+  if (nullptr != domain_b && domain_b->IsIncreasing())
+    b = std::clamp(b, domain_b->Min(), domain_b->Max());
+  else
+    b = ClampSegmentParameter(b);
+
+  // Re-project once the parameters have been constrained.
+  double s = 0.0;
+  if (line_b.ClosestPointTo(line_a.PointAt(a), &s) && ON_IsValid(s))
+  {
+    b = (nullptr != domain_b && domain_b->IsIncreasing())
+      ? std::clamp(s, domain_b->Min(), domain_b->Max())
+      : ClampSegmentParameter(s);
+  }
+  if (line_a.ClosestPointTo(line_b.PointAt(b), &s) && ON_IsValid(s))
+  {
+    a = (nullptr != domain_a && domain_a->IsIncreasing())
+      ? std::clamp(s, domain_a->Min(), domain_a->Max())
+      : ClampSegmentParameter(s);
+  }
+
+  if (maximum_distance > 0.0 && ON_IsValid(maximum_distance))
+  {
+    const double distance = line_a.PointAt(a).DistanceTo(line_b.PointAt(b));
+    if (distance > maximum_distance)
+      return false;
+  }
+
+  if (nullptr != t_a)
+    *t_a = a;
+  if (nullptr != t_b)
+    *t_b = b;
+  return true;
+}

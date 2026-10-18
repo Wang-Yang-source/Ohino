@@ -207,22 +207,149 @@ int EvaluateLoopContainment2d(
   return (winding_number != 0) ? 1 : 0;
 }
 
+/**
+ * Tolerance normalisation of `TL_Brep::PointIsOnFace`
+ * (tl.dll 0x1801fd02c..0x1801fd0c8):
+ *   lower bound  = sqrt(DBL_EPSILON) ~ 1.4901e-08   (const @0x18065f9d0)
+ *   upper bound  = 0.01 * face domain length        (const @0x18065fb88)
+ * The binary passes u_tol / v_tol by pointer into its helper, which may fix them
+ * in place; this is the equivalent value semantics.
+ */
+double ClampFaceTolerance(const ON_BrepFace& face, int dir, double tol)
+{
+  const double floor_tol = std::sqrt(ON_EPSILON);
+  double t = (tol > floor_tol) ? tol : floor_tol;
+
+  double span = 0.0;
+  const ON_Surface* srf = face.SurfaceOf();
+  if (nullptr != srf)
+  {
+    const ON_Interval dom = srf->Domain(dir);
+    if (dom.IsIncreasing())
+      span = dom.Length();
+  }
+  const double cap = 0.01 * std::fabs(span);
+  if (cap > floor_tol && t > cap)
+    t = cap;
+  return t;
+}
+
+/**
+ * Iso-parameter decomposition used by `TL_Brep::PointIsOnFace`
+ * (tl.dll 0x1801fd1bb / 0x1801fd24b -> GetIsoIntervalsHelper + 2D verdict,
+ *  medium confidence on the helper's exact arithmetic).
+ *
+ * For dir == 0 the iso line is `v = uv.y` and the varying coordinate is u;
+ * for dir == 1 the iso line is `u = uv.x` and the varying coordinate is v.
+ * The trim curves are sampled and each sign change is bisected, giving the
+ * crossing coordinates.  Returns
+ *   2 - uv lies within `tol` of a crossing (on the face boundary),
+ *   1 - uv lies strictly inside an even/odd inside interval,
+ *   0 - outside (or no crossing found; the loop test still has the last word).
+ */
+int IsoContainment(
+  const ON_Brep& brep,
+  const ON_BrepFace& face,
+  int dir,
+  const ON_2dPoint& uv,
+  double tol
+)
+{
+  const int fixed = 1 - dir;            // axis of the fixed coordinate
+  const double fixed_value = (0 == dir) ? uv.y : uv.x;
+  const double test_value = (0 == dir) ? uv.x : uv.y;
+
+  std::vector<double> crossings;
+  const int loop_count = face.m_li.Count();
+  for (int fli = 0; fli < loop_count; ++fli)
+  {
+    const int li = face.m_li[fli];
+    if (li < 0 || li >= brep.m_L.Count())
+      continue;
+    const ON_BrepLoop& loop = brep.m_L[li];
+    for (int ti = 0; ti < loop.m_ti.Count(); ++ti)
+    {
+      const int trim_index = loop.m_ti[ti];
+      if (trim_index < 0 || trim_index >= brep.m_T.Count())
+        continue;
+      const ON_BrepTrim& trim = brep.m_T[trim_index];
+      const ON_Interval dom = trim.Domain();
+      if (!dom.IsIncreasing())
+        continue;
+
+      const int samples = 64;
+      ON_2dPoint prev(0.0, 0.0);
+      bool have_prev = false;
+      for (int s = 0; s <= samples; ++s)
+      {
+        const double t = dom.ParameterAt(static_cast<double>(s) / static_cast<double>(samples));
+        const ON_3dPoint p = trim.PointAt(t);
+        if (!std::isfinite(p.x) || !std::isfinite(p.y))
+        {
+          have_prev = false;
+          continue;
+        }
+        const ON_2dPoint curr(p.x, p.y);
+        if (have_prev)
+        {
+          const double f0 = (fixed == 0 ? prev.x : prev.y) - fixed_value;
+          const double f1 = (fixed == 0 ? curr.x : curr.y) - fixed_value;
+          if ((f0 < 0.0) != (f1 < 0.0))
+          {
+            // Linear interpolation is sufficient at 64 samples per trim.
+            const double w = f0 / (f0 - f1);
+            const double x0 = (dir == 0 ? prev.x : prev.y);
+            const double x1 = (dir == 0 ? curr.x : curr.y);
+            crossings.push_back(x0 + w * (x1 - x0));
+          }
+          else if (std::fabs(f1) <= 1e-12)
+          {
+            crossings.push_back((dir == 0 ? curr.x : curr.y));
+          }
+        }
+        prev = curr;
+        have_prev = true;
+      }
+    }
+  }
+
+  if (crossings.empty())
+    return 0;
+
+  std::sort(crossings.begin(), crossings.end());
+  for (double c : crossings)
+  {
+    if (std::fabs(c - test_value) <= tol)
+      return 2;
+  }
+
+  // Even/odd rule: the interval between crossing 2k and 2k+1 is inside.
+  int inside_intervals = 0;
+  for (size_t k = 0; k + 1 < crossings.size(); k += 2)
+  {
+    if (test_value > crossings[k] && test_value < crossings[k + 1])
+      ++inside_intervals;
+  }
+  return (inside_intervals % 2 != 0) ? 1 : 0;
+}
+
 } // anonymous namespace
 
 /* ============================================================================
- * TL_Brep::PointIsOnFace (Reverse-engineered from tl.dll RVA 0x1fcf30 .. 0x1fd350)
+ * TL_Brep::PointIsOnFace (Reverse-engineered from tl.dll RVA 0x1fcf30 .. 0x1fd36a)
  *
- * Disassembly structure:
- *   0x1801fcf30: Validates `0 <= face_index < m_F.Count()` (`[rcx + 0xc0]`).
- *   0x1801fcf6c: Loads `ON_BrepFace* face = &m_F[face_index]` (`sizeof(ON_BrepFace) == 0x138`).
- *   0x1801fcf7b: Checks `face->m_li.Count() > 0` (`[face + 0x28]`).
- *   0x1801fcf95: Checks `face->m_pbox.IsValid()` (`face + 0x40`); if valid, expands bbox by
- *                `(u_tol, v_tol)` and returns 0 if `uv` is outside `[min - tol, max + tol]`.
- *   0x1801fd022: Iterates `li = 0 .. face->m_li.Count() - 1`:
- *                - For `ON_BrepLoop::outer` (`m_type == 1`): point must be Inside (1) or Boundary (2);
- *                  if Outside (0), immediately returns 0.
- *                - For `ON_BrepLoop::inner` (`m_type == 2`): if point is strictly Inside (1) the hole,
- *                  immediately returns 0 (outside the trimmed face); if on Boundary (2), returns 2.
+ * Disassembly structure (1083 bytes / 206 instructions):
+ *   0x1801fcf7a / 0x1801fcf8f: `face_index < 0 || >= m_F.Count()` -> **-1**
+ *                (`mov eax,0xffffffff` @0x1801fd331). NOT 0.
+ *   0x1801fcfad..0x1801fd0c8: u_tol / v_tol are passed by pointer to the internal
+ *                helper and clamped to [sqrt(DBL_EPSILON), 0.01 * face domain length].
+ *   0x1801fd0f1..0x1801fd154: OuterLoop().m_pbox expanded by (u_tol, v_tol) as a cheap
+ *                early-out -> 0 when uv is outside.
+ *   0x1801fd1bb / 0x1801fd24b: `GetIsoIntervalsHelper(dir=0|1)` + 2D verdict.
+ *                A 2 (on boundary) returns immediately; a 1 (inside) short-circuits;
+ *                only 0 falls through to the loop containment below.
+ *   0x1801fd022..: loop containment (outer loop must be inside/on, inner loops
+ *                must not strictly contain uv) -> 2 or 0.
  * ============================================================================ */
 
 int TL_Brep::PointIsOnFace(
@@ -232,11 +359,19 @@ int TL_Brep::PointIsOnFace(
   double v_tol
 ) const
 {
+  // tl.dll 0x1801fcf7a / 0x1801fcf8f -> 0x1801fd331 `mov eax,0xffffffff`.
+  // An out-of-range face index reports -1 (invalid), NOT 0 (outside).  Callers
+  // in the boolean pipeline must distinguish the two.
   if (face_index < 0 || face_index >= m_F.Count())
-    return 0;
+    return -1;
 
   const ON_BrepFace& face = m_F[face_index];
   const int loop_count = face.m_li.Count();
+
+  // tl.dll 0x1801fd02c..0x1801fd0c8: tolerances are clamped into
+  // [sqrt(DBL_EPSILON) , 0.01 * face domain length] per direction.
+  u_tol = ClampFaceTolerance(face, 0, u_tol);
+  v_tol = ClampFaceTolerance(face, 1, v_tol);
 
   // If the face has no trimming loops, check against the underlying surface domain
   if (loop_count <= 0)
@@ -309,6 +444,20 @@ int TL_Brep::PointIsOnFace(
         return 0;
       }
     }
+  }
+
+  // tl.dll 0x1801fd1bb / 0x1801fd24b: iso-parameter decomposition runs FIRST.
+  // A boundary hit (2) returns immediately; an interior hit (1) short-circuits the
+  // loop test; only an outside verdict (0) falls through to the loop containment.
+  {
+    const int iso_u = IsoContainment(*this, face, 0, uv, u_tol);
+    if (2 == iso_u)
+      return 2;
+    const int iso_v = IsoContainment(*this, face, 1, uv, v_tol);
+    if (2 == iso_v)
+      return 2;
+    if (1 == iso_u || 1 == iso_v)
+      return 1;
   }
 
   int result = 1;

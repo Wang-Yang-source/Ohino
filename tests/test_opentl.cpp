@@ -1425,6 +1425,354 @@ void Test3dmRoundTrip() {
 
 }  // namespace
 
+
+// ============================================================================
+// 13 - stage-3 primitives (TL_3DX_LineXPlane / line distances /
+//      TL_GetClosestPoint(Line,Line) / dual curve-line strategy)
+// ============================================================================
+
+void TestStage3Primitives() {
+  using namespace opentl::mvp;
+  BeginSection("stage-3 primitives (lineXplane status, line distances, line-line closest point, dual strategy)");
+
+  // ---- TL_3DX_LineXPlane: the four status codes ------------------------
+  {
+    const ON_3dPoint from(0.0, 0.0, 0.0);
+    const ON_3dVector dir(0.0, 0.0, 1.0);
+    const ON_3dPoint plane_pt(0.0, 0.0, 5.0);
+    const ON_3dVector normal(0.0, 0.0, 1.0);
+
+    double t = -999.0;
+    CHECK_EQ_INT(TL_3DX_LineXPlane(from, dir, plane_pt, normal, &t), TL_LINEXPLANE_UNIQUE);
+    CHECK_NEAR(t, 5.0, 1e-12);
+
+    // Line that starts exactly on the plane -> status 0 (t == 0).
+    t = -999.0;
+    CHECK_EQ_INT(TL_3DX_LineXPlane(plane_pt, dir, plane_pt, normal, &t), TL_LINEXPLANE_AT_ZERO);
+    CHECK_NEAR(t, 0.0, 1e-15);
+
+    // Parallel and not coplanar -> -1.
+    t = -999.0;
+    CHECK_EQ_INT(TL_3DX_LineXPlane(ON_3dPoint(1.0, 2.0, 3.0), ON_3dVector(1.0, 0.0, 0.0),
+                                   plane_pt, normal, &t),
+                 TL_LINEXPLANE_PARALLEL);
+    CHECK_NEAR(t, 0.0, 1e-15);
+
+    // Line lying in the plane -> -2 (degenerate, infinitely many solutions).
+    t = -999.0;
+    CHECK_EQ_INT(TL_3DX_LineXPlane(from, ON_3dVector(1.0, 0.0, 0.0), from, normal, &t),
+                 TL_LINEXPLANE_COPLANAR);
+    CHECK_NEAR(t, 0.0, 1e-15);
+
+    // Saturating division: |den| < 1 and |num| > |den| * DBL_MAX clamps to +-DBL_MAX
+    // instead of producing infinity.
+    t = 0.0;
+    const double tiny = 1e-8;
+    // den = 1e-8 (|den| < 1) and num = 1e305 -> |num| > |den| * DBL_MAX,
+    // so the true quotient (~1e313) would overflow: the binary saturates to +DBL_MAX.
+    CHECK_EQ_INT(TL_3DX_LineXPlane(ON_3dPoint(0.0, 0.0, 0.0), ON_3dVector(0.0, 0.0, tiny),
+                                   ON_3dPoint(0.0, 0.0, 1e305), ON_3dVector(0.0, 0.0, 1.0), &t),
+                 TL_LINEXPLANE_UNIQUE);
+    CHECK(t == ON_DBL_MAX);
+    // Negative direction saturates towards -DBL_MAX instead of -inf.
+    CHECK_EQ_INT(TL_3DX_LineXPlane(ON_3dPoint(0.0, 0.0, 0.0), ON_3dVector(0.0, 0.0, -tiny),
+                                   ON_3dPoint(0.0, 0.0, 1e305), ON_3dVector(0.0, 0.0, 1.0), &t),
+                 TL_LINEXPLANE_UNIQUE);
+    CHECK(t == -ON_DBL_MAX);
+
+    // Null out-parameter must not crash and must still report the status.
+    CHECK_EQ_INT(TL_3DX_LineXPlane(from, dir, plane_pt, normal, nullptr), TL_LINEXPLANE_UNIQUE);
+  }
+
+  // ---- line distance C-ABI (min / max + -1.0 sentinel) -----------------
+  {
+    const ON_Line horizontal(ON_3dPoint(0.0, 0.0, 0.0), ON_3dPoint(10.0, 0.0, 0.0));
+    const ON_3dPoint probe(5.0, 3.0, 4.0);
+
+    CHECK_NEAR(TL_LineDistanceToPoint(&horizontal, probe, false), 5.0, 1e-12);
+    // Furthest point on the segment from the probe: one of the two endpoints.
+    CHECK_NEAR(TL_LineDistanceToPoint(&horizontal, probe, true),
+               std::sqrt(25.0 + 9.0 + 16.0), 1e-12);
+
+    CHECK_NEAR(TL_LineDistanceToPoint(nullptr, probe, false), -1.0, 0.0);
+
+    const ON_Line parallel(ON_3dPoint(0.0, 2.0, 0.0), ON_3dPoint(10.0, 2.0, 0.0));
+    CHECK_NEAR(TL_LineDistanceToLine(&horizontal, &parallel, false), 2.0, 1e-12);
+    CHECK(TL_LineDistanceToLine(&horizontal, &parallel, true) > 2.0);
+    CHECK_NEAR(TL_LineDistanceToLine(&horizontal, nullptr, true), -1.0, 0.0);
+  }
+
+  // ---- TL_GetClosestPoint(ON_Line, ON_Line) ---------------------------
+  {
+    // Intersecting segments: the analytic branch must land on the crossing.
+    const ON_Line a(ON_3dPoint(0.0, 0.0, 0.0), ON_3dPoint(10.0, 0.0, 0.0));
+    const ON_Line b(ON_3dPoint(5.0, -5.0, 0.0), ON_3dPoint(5.0, 5.0, 0.0));
+    double ta = -1.0;
+    double tb = -1.0;
+    CHECK(TL_GetClosestPoint(a, b, &ta, &tb));
+    CHECK_NEAR(ta, 0.5, 1e-12);
+    CHECK_NEAR(tb, 0.5, 1e-12);
+    CHECK_NEAR(a.PointAt(ta).DistanceTo(b.PointAt(tb)), 0.0, 1e-12);
+
+    // Skew, non-overlapping segments: the parallel/skew branch must clamp to the
+    // closest endpoint pair (a.to to b.from).
+    const ON_Line c(ON_3dPoint(0.0, 0.0, 0.0), ON_3dPoint(1.0, 0.0, 0.0));
+    const ON_Line d(ON_3dPoint(5.0, 3.0, 0.0), ON_3dPoint(6.0, 3.0, 0.0));
+    CHECK(TL_GetClosestPoint(c, d, &ta, &tb));
+    CHECK_NEAR(ta, 1.0, 1e-12);
+    CHECK_NEAR(tb, 0.0, 1e-12);
+
+    // Parallel segments: still a usable parameter pair, true is not "intersects".
+    const ON_Line e(ON_3dPoint(0.0, 0.0, 0.0), ON_3dPoint(1.0, 0.0, 0.0));
+    const ON_Line f(ON_3dPoint(0.0, 2.0, 0.0), ON_3dPoint(1.0, 2.0, 0.0));
+    CHECK(TL_GetClosestPoint(e, f, &ta, &tb));
+    CHECK_NEAR(e.PointAt(ta).DistanceTo(f.PointAt(tb)), 2.0, 1e-9);
+
+    // 7-arg overload: maximum_distance gate.
+    CHECK(TL_GetClosestPoint(e, f, &ta, &tb, 0.0, nullptr, nullptr));
+    CHECK(!TL_GetClosestPoint(e, f, &ta, &tb, 1.5, nullptr, nullptr));
+    CHECK(TL_GetClosestPoint(e, f, &ta, &tb, 2.5, nullptr, nullptr));
+
+    // 7-arg overload: sub-domain clamping.
+    const ON_Interval low_half(0.0, 0.25);
+    CHECK(TL_GetClosestPoint(a, b, &ta, &tb, 0.0, &low_half, nullptr));
+    CHECK(ta <= 0.25 + 1e-12);
+  }
+
+  // ---- dual curve x line strategy cross-check -------------------------
+  {
+    const ON_Circle circle(ON_Plane::World_xy, 5.0);
+    ON_ArcCurve circle_curve(circle);
+
+    struct Case {
+      const char* name;
+      ON_Line line;
+      int expected_count;
+    };
+    const Case cases[] = {
+      { "diameter", ON_Line(ON_3dPoint(-10.0, 0.0, 0.0), ON_3dPoint(10.0, 0.0, 0.0)), 2 },
+      { "tangent", ON_Line(ON_3dPoint(-10.0, 5.0, 0.0), ON_3dPoint(10.0, 5.0, 0.0)), 1 },
+      { "miss", ON_Line(ON_3dPoint(-10.0, 9.0, 0.0), ON_3dPoint(10.0, 9.0, 0.0)), 0 },
+      { "chord", ON_Line(ON_3dPoint(-10.0, 3.0, 0.0), ON_3dPoint(10.0, 3.0, 0.0)), 2 },
+    };
+
+    for (const Case& c : cases) {
+      ON_SimpleArray<TL_CurveCurveIntersectionEvent> primary;
+      ON_SimpleArray<TL_CurveCurveIntersectionEvent> subdiv;
+      const int count_primary = TL_IntersectCurveLine(circle_curve, c.line, 1e-9, primary);
+      const int count_subdiv = TL_IntersectCurveLineBySubdivision(circle_curve, c.line, 1e-9, subdiv);
+
+      CHECK_MSG(count_primary == c.expected_count,
+                std::string("primary count for ") + c.name + " = " + std::to_string(count_primary));
+      CHECK_MSG(count_subdiv == c.expected_count,
+                std::string("subdivision count for ") + c.name + " = " + std::to_string(count_subdiv));
+      CHECK_EQ_INT(count_primary, count_subdiv);
+
+      for (int i = 0; i < std::min(count_primary, count_subdiv); ++i) {
+        CHECK_NEAR(primary[i].param_a, subdiv[i].param_a, 1e-6);
+        CHECK(primary[i].point_a.DistanceTo(subdiv[i].point_a) <= 1e-6);
+      }
+    }
+  }
+
+  EndSection();
+}
+
+// ============================================================================
+// 14 - four-view viewport layout (Top / Perspective / Front / Right)
+// ============================================================================
+
+void TestFourViewLayout() {
+  BeginSection("four-view viewport layout (Top / Perspective / Front / Right)");
+
+  TL_FourViewLayout layout = TL_FourViewLayout::Default(1600, 900);
+
+  // ---- structure -------------------------------------------------------
+  CHECK_EQ_INT(layout.Count(), 4);
+  CHECK_EQ_INT(layout.IndexOfName("Top"), 0);
+  CHECK_EQ_INT(layout.IndexOfName("Perspective"), 1);
+  CHECK_EQ_INT(layout.IndexOfName("Front"), 2);
+  CHECK_EQ_INT(layout.IndexOfName("Right"), 3);
+  CHECK_EQ_INT(layout.IndexOfName("Nope"), -1);
+  CHECK_EQ_INT(layout.View(0).m_projection, TL_PROJECTION_PARALLEL);
+  CHECK_EQ_INT(layout.View(1).m_projection, TL_PROJECTION_PERSPECTIVE);
+  CHECK_EQ_INT(layout.View(2).m_projection, TL_PROJECTION_PARALLEL);
+  CHECK_EQ_INT(layout.View(3).m_projection, TL_PROJECTION_PARALLEL);
+
+  // 2x2 grid must tile the canvas exactly.
+  const TL_Viewport& top = layout.View(0);
+  const TL_Viewport& persp = layout.View(1);
+  const TL_Viewport& front = layout.View(2);
+  const TL_Viewport& right = layout.View(3);
+  CHECK_EQ_INT(top.m_left, 0);
+  CHECK_EQ_INT(top.m_top, 0);
+  CHECK_EQ_INT(persp.m_left, top.m_width);
+  CHECK_EQ_INT(front.m_top, top.m_height);
+  CHECK_EQ_INT(top.m_width + persp.m_width, 1600);
+  CHECK_EQ_INT(top.m_height + front.m_height, 900);
+  CHECK_EQ_INT(right.m_left, persp.m_left);
+  CHECK_EQ_INT(right.m_top, front.m_top);
+
+  // ---- standard-view orientation --------------------------------------
+  {
+    ON_2dPoint screen = ON_2dPoint::Origin;
+    // Top view: +X to the right, +Y upward (screen y decreases).
+    CHECK(top.WorldToScreen(ON_3dPoint(1.0, 0.0, 0.0), screen));
+    const double top_x_plus = screen.x;
+    CHECK(top.WorldToScreen(ON_3dPoint(0.0, 1.0, 0.0), screen));
+    const double top_y_plus = screen.y;
+    CHECK(top_x_plus > top.m_left + top.m_width * 0.5);
+    CHECK(top_y_plus < top.m_top + top.m_height * 0.5);
+
+    // Front view: +X right, +Z up.
+    CHECK(front.WorldToScreen(ON_3dPoint(1.0, 0.0, 0.0), screen));
+    const double front_x_plus = screen.x;
+    CHECK(front.WorldToScreen(ON_3dPoint(0.0, 0.0, 1.0), screen));
+    const double front_z_up = screen.y;
+    CHECK(front_x_plus > front.m_left + front.m_width * 0.5);
+    CHECK(front_z_up < front.m_top + front.m_height * 0.5);
+
+    // Right view: +Y right, +Z up (this is what distinguishes it from Front).
+    CHECK(right.WorldToScreen(ON_3dPoint(0.0, 1.0, 0.0), screen));
+    const double right_y_plus = screen.x;
+    CHECK(right.WorldToScreen(ON_3dPoint(0.0, 0.0, 1.0), screen));
+    const double right_z_up = screen.y;
+    CHECK(right_y_plus > right.m_left + right.m_width * 0.5);
+    CHECK(right_z_up < right.m_top + right.m_height * 0.5);
+    // and it must NOT map +X to the horizontal axis
+    CHECK(right.WorldToScreen(ON_3dPoint(1.0, 0.0, 0.0), screen));
+    CHECK(std::fabs(screen.x - (right.m_left + right.m_width * 0.5)) <= 1e-9);
+  }
+
+  // ---- screen -> ray round-trip (all four views) ----------------------
+  {
+    const ON_3dPoint probes[3] = {
+      ON_3dPoint(0.0, 0.0, 0.0), ON_3dPoint(3.0, -2.0, 4.0), ON_3dPoint(-6.0, 5.0, 1.5)
+    };
+    for (int view = 0; view < 4; ++view) {
+      const TL_Viewport& vp = layout.View(view);
+      for (int i = 0; i < 3; ++i) {
+        ON_2dPoint screen = ON_2dPoint::Origin;
+        CHECK(vp.WorldToScreen(probes[i], screen));
+        ON_3dPoint hit = ON_3dPoint::Origin;
+        if (TL_PROJECTION_PARALLEL == vp.m_projection) {
+          CHECK(vp.ScreenToCameraPlane(screen, hit));
+          CHECK(hit.DistanceTo(vp.m_target + vp.ScreenRight() *
+                               ON_DotProduct(probes[i] - vp.m_target, vp.ScreenRight()) +
+                               vp.ScreenUp() *
+                               ON_DotProduct(probes[i] - vp.m_target, vp.ScreenUp())) <= 1e-6);
+        } else {
+          // Perspective: the screen ray through the projected point must pass
+          // through the world point itself.
+          ON_3dPoint from = ON_3dPoint::Origin;
+          ON_3dVector dir = ON_3dVector::ZeroVector;
+          CHECK(vp.ScreenToRay(screen, from, dir));
+          const ON_3dVector to_point = probes[i] - from;
+          const ON_3dVector cross = ON_CrossProduct(dir, to_point);
+          CHECK(cross.Length() <= 1e-6 * std::max(1.0, to_point.Length()));
+        }
+      }
+    }
+  }
+
+  // ---- construction-plane hit ----------------------------------------
+  {
+    ON_2dPoint screen = ON_2dPoint::Origin;
+    const ON_3dPoint world(4.0, -3.0, 0.0);
+    CHECK(layout.View(0).WorldToScreen(world, screen));
+    ON_3dPoint hit = ON_3dPoint::Origin;
+    CHECK(layout.View(0).ScreenToPlane(screen, ON_Plane::World_xy, hit));
+    CHECK(hit.DistanceTo(world) <= 1e-6);
+  }
+
+  // ---- picking --------------------------------------------------------
+  {
+    std::vector<ON_3dPoint> points;
+    points.push_back(ON_3dPoint(0.0, 0.0, 0.0));
+    points.push_back(ON_3dPoint(10.0, 0.0, 0.0));
+    points.push_back(ON_3dPoint(0.0, 10.0, 0.0));
+
+    ON_2dPoint screen = ON_2dPoint::Origin;
+    CHECK(layout.View(0).WorldToScreen(points[1], screen));
+    CHECK_EQ_INT(layout.PickPoint(0, screen, points, 6.0), 1);
+    CHECK_EQ_INT(layout.PickPoint(0, ON_2dPoint(screen.x + 60.0, screen.y + 60.0), points, 6.0), -1);
+  }
+
+  // ---- pan / zoom / zoom-to-fit ---------------------------------------
+  {
+    TL_Viewport vp = layout.View(0);
+    ON_2dPoint before = ON_2dPoint::Origin;
+    CHECK(vp.WorldToScreen(ON_3dPoint(0.0, 0.0, 0.0), before));
+    vp.Pan(10.0, -6.0);
+    ON_2dPoint after = ON_2dPoint::Origin;
+    CHECK(vp.WorldToScreen(ON_3dPoint(0.0, 0.0, 0.0), after));
+    CHECK_NEAR(after.x - before.x, 10.0, 1e-9);
+    CHECK_NEAR(after.y - before.y, -6.0, 1e-9);
+
+    const double scale_before = vp.m_scale;
+    vp.Zoom(2.0, nullptr);
+    CHECK_NEAR(vp.m_scale, scale_before * 2.0, 1e-9);
+
+    ON_BoundingBox box;
+    box.Set(ON_3dPoint(-10.0, -5.0, -2.0));
+    box.Set(ON_3dPoint(10.0, 5.0, 2.0), true);
+    for (int i = 0; i < 4; ++i) {
+      TL_Viewport fit = layout.View(i);
+      fit.ZoomToFit(box, 0.9);
+      // every bbox corner must project inside the viewport rectangle
+      ON_3dPoint pts[8];
+      const int count = box.GetCorners(pts);
+      for (int c = 0; c < count; ++c) {
+        ON_2dPoint s = ON_2dPoint::Origin;
+        if (!fit.WorldToScreen(pts[c], s))
+          continue;
+        CHECK(s.x >= fit.m_left - 1e-6 && s.x <= fit.m_left + fit.m_width + 1e-6);
+        CHECK(s.y >= fit.m_top - 1e-6 && s.y <= fit.m_top + fit.m_height + 1e-6);
+      }
+    }
+  }
+
+  // ---- canvas resize keeps the tiling --------------------------------
+  {
+    TL_FourViewLayout resized = TL_FourViewLayout::Default(800, 600);
+    resized.SetCanvasSize(1024, 768);
+    CHECK_EQ_INT(resized.View(0).m_width + resized.View(1).m_width, 1024);
+    CHECK_EQ_INT(resized.View(0).m_height + resized.View(2).m_height, 768);
+  }
+
+  // ---- JSON round-trip ------------------------------------------------
+  {
+    TL_FourViewLayout original = TL_FourViewLayout::Default(1280, 720);
+    original.View(0).Pan(12.0, 4.0);
+    original.View(0).Zoom(1.5, nullptr);
+    original.View(1).m_target = ON_3dPoint(3.0, 4.0, 5.0);
+    original.View(2).m_scale = 33.5;
+
+    const std::string json = original.ToJson();
+    CHECK(json.find("opentl.fourview") != std::string::npos);
+
+    TL_FourViewLayout restored;
+    CHECK(restored.FromJson(json));
+    CHECK_EQ_INT(restored.CanvasWidth(), 1280);
+    CHECK_EQ_INT(restored.CanvasHeight(), 720);
+    for (int i = 0; i < 4; ++i) {
+      CHECK(restored.View(i).m_name == original.View(i).m_name);
+      CHECK_EQ_INT(restored.View(i).m_standard_view, original.View(i).m_standard_view);
+      CHECK_EQ_INT(restored.View(i).m_projection, original.View(i).m_projection);
+      CHECK_NEAR(restored.View(i).m_scale, original.View(i).m_scale, 1e-9);
+      CHECK_POINT(restored.View(i).m_target, original.View(i).m_target, 1e-9);
+      CHECK_EQ_INT(restored.View(i).m_width, original.View(i).m_width);
+    }
+
+    // Malformed / foreign input must be rejected, not half-applied.
+    TL_FourViewLayout bad;
+    CHECK(!bad.FromJson("{\"schema\":\"something-else\"}"));
+    CHECK(!bad.FromJson("not json at all"));
+  }
+
+  EndSection();
+}
+
 int main() {
   ON::Begin();
 
@@ -1443,6 +1791,8 @@ int main() {
   TestReverseEngineeredHelpers();
   TestJsonRoundTrip();
   Test3dmRoundTrip();
+  TestStage3Primitives();
+  TestFourViewLayout();
 
   std::printf("\n=====================\n");
   std::printf("sections=%d checks=%d failures=%d failed_sections=%d\n", g_state.section_index,

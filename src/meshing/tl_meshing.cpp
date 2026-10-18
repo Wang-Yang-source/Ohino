@@ -3,6 +3,51 @@
 #include <algorithm>
 #include <cmath>
 
+namespace {
+
+/**
+ * True when `face` references mesh vertex `v` on any of its corners
+ * (3 for a triangle, 4 for a quad).
+ */
+bool FaceHasVertex(const ON_MeshFace& face, int v)
+{
+  const int slots = face.IsQuad() ? 4 : 3;
+  for (int k = 0; k < slots; ++k)
+  {
+    if (face.vi[k] == v)
+      return true;
+  }
+  return false;
+}
+
+/**
+ * Dual-loop match of one topological vertex against the two incident faces
+ * (tl.dll 0x18033be84..0x18033bf6c).  The value recorded is the **mesh vertex
+ * index** that was found in each face; each hit overwrites the recorded value,
+ * so the last matching mesh vertex wins -- exactly as the binary does.
+ */
+void MatchTopologicalVertex(
+  const ON_MeshTopologyVertex& topv,
+  const ON_MeshFace& face_a,
+  const ON_MeshFace& face_b,
+  int& hit_a,
+  int& hit_b
+)
+{
+  hit_a = -1;
+  hit_b = -1;
+  for (int k = 0; k < topv.m_v_count; ++k)
+  {
+    const int v = topv.m_vi[k];
+    if (FaceHasVertex(face_a, v))
+      hit_a = v;
+    if (FaceHasVertex(face_b, v))
+      hit_b = v;
+  }
+}
+
+} // anonymous namespace
+
 TL_FUNCTION bool TL_IsMeshEdgeUnwelded(int edge_index, const ON_Mesh* mesh)
 {
   if (nullptr == mesh)
@@ -13,7 +58,12 @@ TL_FUNCTION bool TL_IsMeshEdgeUnwelded(int edge_index, const ON_Mesh* mesh)
     return false;
 
   const ON_MeshTopologyEdge& tope = top.m_tope[edge_index];
-  if (tope.m_topf_count <= 1)
+
+  // tl.dll 0x18033bdc1: `cmp dword ptr [rax+0x8], 2` / `jne false`.
+  // The binary requires EXACTLY two incident faces; non-manifold edges
+  // (3+ faces) are not "unwelded" and return false.  The previous
+  // `m_topf_count <= 1` reading was wrong.
+  if (2 != tope.m_topf_count)
     return false;
 
   const int topv0 = tope.m_topvi[0];
@@ -22,68 +72,32 @@ TL_FUNCTION bool TL_IsMeshEdgeUnwelded(int edge_index, const ON_Mesh* mesh)
   if (topv0 < 0 || topv0 >= topv_count || topv1 < 0 || topv1 >= topv_count)
     return false;
 
-  // Fast path: if both topological vertices reference at most 1 mesh vertex,
-  // all incident faces must share the exact same mesh vertex indices.
-  if (top.m_topv[topv0].m_v_count <= 1 && top.m_topv[topv1].m_v_count <= 1)
+  const int fi0 = tope.m_topfi[0];
+  const int fi1 = tope.m_topfi[1];
+  if (fi0 < 0 || fi1 < 0 || fi0 >= mesh->m_F.Count() || fi1 >= mesh->m_F.Count())
     return false;
 
-  const int face_count = mesh->m_F.Count();
-  const int topf_count = top.m_topf.Count();
-  const int vertex_count = mesh->VertexCount();
-  const int map_count = top.m_topv_map.Count();
+  const ON_MeshFace& face0 = mesh->m_F[fi0];
+  const ON_MeshFace& face1 = mesh->m_F[fi1];
 
-  int first_v0 = -1;
-  int first_v1 = -1;
-  bool have_first_pair = false;
+  // The binary has NO m_v_count fast path: it always runs both dual loops.
+  int a0 = -1;
+  int a1 = -1;
+  int b0 = -1;
+  int b1 = -1;
+  MatchTopologicalVertex(top.m_topv[topv0], face0, face1, a0, a1);
+  MatchTopologicalVertex(top.m_topv[topv1], face0, face1, b0, b1);
 
-  // Slow path: inspect each incident face in tope.m_topfi[k]
-  for (int k = 0; k < tope.m_topf_count; ++k)
-  {
-    const int fi = tope.m_topfi[k];
-    if (fi < 0 || fi >= face_count || fi >= topf_count)
-      continue;
-
-    const ON_MeshTopologyFace& topf = top.m_topf[fi];
-    const ON_MeshFace& mf = mesh->m_F[fi];
-    const int side_count = topf.IsTriangle() ? 3 : 4;
-
-    for (int side = 0; side < side_count; ++side)
-    {
-      if (topf.m_topei[side] != edge_index)
-        continue;
-
-      const int v_start = mf.vi[(side + side_count - 1) % side_count];
-      const int v_end = mf.vi[side];
-      if (v_start < 0 || v_start >= vertex_count || v_end < 0 || v_end >= vertex_count)
-        continue;
-
-      // Orient the pair along the topological edge direction using m_reve[side]
-      int v0 = (topf.m_reve[side] != 0) ? v_end : v_start;
-      int v1 = (topf.m_reve[side] != 0) ? v_start : v_end;
-
-      if (map_count == vertex_count)
-      {
-        if (top.m_topv_map[v0] == topv1 && top.m_topv_map[v1] == topv0)
-          std::swap(v0, v1);
-      }
-
-      if (!have_first_pair)
-      {
-        first_v0 = v0;
-        first_v1 = v1;
-        have_first_pair = true;
-      }
-      else
-      {
-        const bool same_ordered = (v0 == first_v0 && v1 == first_v1);
-        const bool same_reversed = (v0 == first_v1 && v1 == first_v0);
-        if (!same_ordered && !same_reversed)
-          return true;
-      }
-    }
-  }
-
-  return false;
+  // tl.dll 0x18033bf73..0x18033bf85: four inequality tests; any equality -> false.
+  if (a0 == a1)
+    return false;
+  if (a0 == b1)
+    return false;
+  if (b0 == a1)
+    return false;
+  if (b0 == b1)
+    return false;
+  return true;
 }
 
 TL_FUNCTION ON_Mesh* TL_MeshSurfaceGrid(

@@ -1,4 +1,5 @@
 #include "opentl/mvp/rhino_mvp.h"
+#include "opentl/intersect/tl_intersect.h"
 
 #include <algorithm>
 #include <cmath>
@@ -302,17 +303,30 @@ TL_FUNCTION LinePlaneIntersection IntersectLinePlane(
   const double cosine = std::fabs(ON_DotProduct(direction / dir_len, normal / normal_len));
   result.is_parallel = (cosine <= ON_SQRT_EPSILON);
 
+  // Authoritative scalar solve: same math as `tl.dll!TL_3DX_LineXPlane`, including the
+  // -2 / -1 / 0 / 1 status codes and the saturating division.
   double t = 0.0;
-  if (!ON_Intersect(line, local_plane, &t) || !ON_IsValid(t))
+  result.status = TL_3DX_LineXPlane(line.from, direction, local_plane.origin, normal, &t);
+  if (!ON_IsValid(t))
+    t = 0.0;
+
+  if (TL_LINEXPLANE_COPLANAR == result.status)
   {
-    // Degenerate / edge case: fall back to the analytic plane-distance solve.
-    const double da = local_plane.plane_equation.ValueAt(line.from);
-    const double db = local_plane.plane_equation.ValueAt(line.to);
-    const double denom = da - db;
-    if (std::fabs(denom) > 0.0 && ON_IsValid(denom))
-      t = da / denom;
-    else
-      t = 0.5;
+    // The whole line lies in the plane: infinitely many solutions. Rhino's C ABI
+    // reports "no single intersection" while status -2 tells the caller why.
+    result.is_parallel = false;
+    result.intersects = false;
+    result.line_param = 0.0;
+    result.point = line.from;
+    return result;
+  }
+  if (TL_LINEXPLANE_PARALLEL == result.status)
+  {
+    result.is_parallel = true;
+    result.intersects = false;
+    result.line_param = 0.0;
+    result.point = line.from;
+    return result;
   }
 
   result.line_param = t;
@@ -324,12 +338,6 @@ TL_FUNCTION LinePlaneIntersection IntersectLinePlane(
   {
     result.plane_u = u;
     result.plane_v = v;
-  }
-
-  if (result.is_parallel)
-  {
-    result.intersects = false;
-    return result;
   }
 
   if (finite_segment)

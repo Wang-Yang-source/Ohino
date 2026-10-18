@@ -21,6 +21,7 @@ set(OPENTL_SOURCES
     src/mvp/geometry_scene.cpp
     src/mvp/intersect_sample.cpp
     src/mvp/scene_io.cpp
+    src/viewport/tl_viewport.cpp
 )
 
 add_library(opentl STATIC ${OPENTL_SOURCES})
@@ -45,3 +46,4 @@ add_test(NAME opentl_tests COMMAND opentl_tests)
 add_executable(opentl_cli apps/opentl_cli.cpp)
 target_link_libraries(opentl_cli PRIVATE opentl)
 add_test(NAME opentl_cli_demo COMMAND opentl_cli --demo --out-dir "${CMAKE_CURRENT_BINARY_DIR}/demo_out")
+add_test(NAME opentl_cli_views COMMAND opentl_cli --views --out-dir "${CMAKE_CURRENT_BINARY_DIR}/views_out")

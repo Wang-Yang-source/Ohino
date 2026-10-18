@@ -14,23 +14,28 @@
 /**
  * Exact reverse-engineered reimplementation of:
  *   `bool TL_IsMeshEdgeUnwelded(int edge_index, const ON_Mesh* mesh)`
- *   from `tl.dll` at RVA `0x33bd70`.
+ *   from `tl.dll` at RVA `0x33bd70` (569 bytes / 186 instructions).
  *
- * Disassembly logic verified against `tl.dll` (`0x18033bd70 .. 0x18033bfb0`):
- * 1. If `mesh == nullptr` (`test rdx, rdx`), returns `false`.
- * 2. Calls `ON_Mesh::Topology()` (`call qword ptr [rip + 0x41daeb]`).
- * 3. Validates `0 <= edge_index < top.m_tope.Count()` (`[rax + 0x38]`).
- * 4. Reads `const ON_MeshTopologyEdge& tope = top.m_tope[edge_index]` (`sizeof == 24`).
- * 5. If `tope.m_topf_count <= 1`, returns `false` (interior manifold shared edge is required
- *    for an unwelded crease check between faces).
- * 6. Resolves the two topological vertices `topvi[0]`, `topvi[1]` in `top.m_topv`:
- *    - Fast path: if both `topv[0].m_v_count <= 1` and `topv[1].m_v_count <= 1`, each
- *      topological vertex has only 1 mesh vertex, so the edge cannot be unwelded -> returns `false`.
- * 7. Slow path (`0x18033be23 .. 0x18033bfa0`): iterates over the incident faces in `tope.m_topfi[k]`,
- *    locates which side `side` of face `F[fi]` corresponds to `edge_index` (watching `m_reve[side]`),
- *    extracts the actual mesh vertex pair `(v0, v1)` from `F.vi[]`, and checks whether all incident
- *    faces share the identical mesh vertex indices `(v0, v1)` or `(v1, v0)`. If any incident face
- *    uses distinct mesh vertex indices along this topological edge, returns `true` (unwelded).
+ * Disassembly verified against `tl.dll` (`0x18033bd70 .. 0x18033bfa8`):
+ * 1. `mesh == nullptr` -> `false`.
+ * 2. `ON_Mesh::Topology()`; `edge_index < 0 || >= top.m_tope.Count()` -> `false`.
+ * 3. `tope.m_topf_count` must be **exactly 2** (`cmp dword ptr [rax+0x8], 2` / `jne false`).
+ *    Non-manifold edges (3+ incident faces) return `false`; they are not "unwelded".
+ *    (The earlier `<= 1` reading was wrong.)
+ * 4. The two topological vertices are `top.m_topv[tope.m_topvi[0..1]]`; the two incident
+ *    faces are `mesh->m_F[tope.m_topfi[0..1]]`.
+ * 5. Two dual loops (`0x18033be84..0x18033bf6c`): for each topological vertex, walk its
+ *    `m_vi[]` mesh vertices and record the **mesh vertex index** found in face 0
+ *    (registers `r13`/`r15`) and in face 1 (`r12`/`ebp`). Each hit overwrites the
+ *    register, so the last matching mesh vertex wins. There is **no** `m_v_count <= 1`
+ *    fast path.
+ * 6. Four inequality tests (`0x18033bf73..0x18033bf85`): if any of
+ *    `a0 == a1`, `a0 == b1`, `b0 == a1`, `b0 == b1` holds (where `a0/a1` are the mesh
+ *    vertices of topological vertex 0 in face 0 / face 1, `b0/b1` likewise for the
+ *    other end), return `false`; all four indices pairwise distinct -> `true`.
+ *
+ * Semantics: an edge counts as unwelded only when **both** endpoints are split into
+ * four distinct mesh vertices. A single shared endpoint returns `false`.
  */
 TL_FUNCTION bool TL_IsMeshEdgeUnwelded(int edge_index, const ON_Mesh* mesh);
 

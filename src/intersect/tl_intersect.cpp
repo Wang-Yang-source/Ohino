@@ -843,3 +843,262 @@ TL_FUNCTION int TL_IntersectCurvePlane(
 
   return curve_params.Count();
 }
+
+// ============================================================================
+// TL_3DX_LineXPlane  (tl.dll RVA 0x305d0, 378 bytes, zero imports)
+// ============================================================================
+
+TL_FUNCTION int TL_3DX_LineXPlane(
+  const ON_3dPoint& line_from,
+  const ON_3dVector& dir,
+  const ON_3dPoint& plane_pt,
+  const ON_3dVector& plane_normal,
+  double* t_out
+)
+{
+  const double den = ON_DotProduct(dir, plane_normal);
+  const double num = ON_DotProduct(plane_pt - line_from, plane_normal);
+
+  if (0.0 == den)
+  {
+    if (nullptr != t_out)
+      *t_out = 0.0;
+    // num == 0 -> the line lies in the plane (coplanar, infinitely many solutions);
+    // otherwise it is parallel and not coplanar (no solution).
+    return (0.0 == num) ? TL_LINEXPLANE_COPLANAR : TL_LINEXPLANE_PARALLEL;
+  }
+
+  if (0.0 == num)
+  {
+    if (nullptr != t_out)
+      *t_out = 0.0;
+    return TL_LINEXPLANE_AT_ZERO;
+  }
+
+  const double abs_den = std::fabs(den);
+  const double abs_num = std::fabs(num);
+  double t = 0.0;
+
+  if (abs_den >= 1.0)
+  {
+    // 0x180030715 branch: DBL_MIN guards a numerator that is numerically zero.
+    t = (abs_num <= abs_den * ON_DBL_MIN) ? 0.0 : (num / den);
+  }
+  else
+  {
+    // 0x1800306af branch: saturate instead of producing +-inf.
+    if (abs_num > abs_den * ON_DBL_MAX)
+    {
+      const bool same_sign = (num > 0.0) == (den > 0.0);
+      t = same_sign ? ON_DBL_MAX : -ON_DBL_MAX;
+    }
+    else
+    {
+      t = num / den;
+    }
+  }
+
+  if (nullptr != t_out)
+    *t_out = t;
+  return TL_LINEXPLANE_UNIQUE;
+}
+
+// ============================================================================
+// Line distance C-ABI entry points
+// ============================================================================
+
+TL_FUNCTION double TL_LineDistanceToPoint(const ON_Line* line, ON_3dPoint test_point, bool maximum)
+{
+  if (nullptr == line)
+    return -1.0; // rhcommon_c preloads xmm0 with the -1.0 constant
+  return maximum ? line->MaximumDistanceTo(test_point) : line->MinimumDistanceTo(test_point);
+}
+
+TL_FUNCTION double TL_LineDistanceToLine(const ON_Line* line_a, const ON_Line* line_b, bool maximum)
+{
+  if (nullptr == line_a || nullptr == line_b)
+    return -1.0;
+  return maximum ? line_a->MaximumDistanceTo(*line_b) : line_a->MinimumDistanceTo(*line_b);
+}
+
+// ============================================================================
+// TL_IntersectCurveLineBySubdivision -- independent second strategy
+// ============================================================================
+
+namespace {
+
+/**
+ * Adaptive subdivision with Lipschitz pruning.
+ *
+ * The distance from a point on the curve to the (infinite) line is 1-Lipschitz in
+ * space, so for any sub-interval [t_i, t_i+1]:
+ *
+ *     min_{t in [t_i, t_i+1]} D(t)  >=  min(D(t_i), D(t_i+1)) - |C(t_i) - C(t_i+1)|
+ *
+ * That lower bound is rigorous (no heuristic constant), which is what makes this an
+ * independent check on the sampling + golden-section + Newton primary solver.  Every
+ * sub-interval whose bound dips below the tolerance gets a Newton polish; the rest are
+ * provably clear.
+ */
+void CollectHitsByLipschitzSubdivision(
+  const CurveLineDistanceEvaluator& evaluator,
+  const ON_Curve& curve,
+  double tol,
+  int samples_per_span,
+  std::vector<double>& hits
+)
+{
+  const ON_Interval domain = curve.Domain();
+  const double t_min = domain.Min();
+  const double t_max = domain.Max();
+  const int spans = std::max(1, curve.SpanCount());
+  const int samples = std::max(64, spans * samples_per_span);
+
+  double prev_t = t_min;
+  double prev_d = evaluator.DistanceAt(t_min);
+  ON_3dPoint prev_pt = curve.PointAt(t_min);
+
+  for (int i = 1; i <= samples; ++i)
+  {
+    const double t = (i == samples)
+      ? t_max
+      : t_min + (t_max - t_min) * (static_cast<double>(i) / static_cast<double>(samples));
+    const double d = evaluator.DistanceAt(t);
+    const ON_3dPoint pt = curve.PointAt(t);
+
+    const double chord = prev_pt.DistanceTo(pt);
+    const double lower_bound = std::min(prev_d, d) - chord;
+
+    if (lower_bound <= tol)
+    {
+      double best_t = 0.5 * (prev_t + t);
+      double best_d = evaluator.DistanceAt(best_t);
+      RefineCurveLineMinimum(evaluator, prev_t, t, best_t, best_t, best_d);
+      if (best_d <= tol)
+        hits.push_back(std::clamp(best_t, prev_t, t));
+    }
+
+    prev_t = t;
+    prev_d = d;
+    prev_pt = pt;
+  }
+}
+
+} // anonymous namespace
+
+TL_FUNCTION int TL_IntersectCurveLineBySubdivision(
+  const ON_Curve& curve,
+  const ON_Line& line,
+  double tolerance,
+  ON_SimpleArray<TL_CurveCurveIntersectionEvent>& events
+)
+{
+  events.SetCount(0);
+
+  const ON_Interval domain = curve.Domain();
+  if (!domain.IsIncreasing())
+    return 0;
+
+  const double tol = (tolerance > 0.0 && ON_IsValid(tolerance)) ? tolerance : ON_ZERO_TOLERANCE;
+  const double t_min = domain.Min();
+  const double t_max = domain.Max();
+
+  const CurveLineDistanceEvaluator evaluator(curve, line);
+  if (!evaluator.is_valid)
+  {
+    // Degenerate (point) line: fall back to the primary solver so both strategies
+    // agree on the documented degenerate contract.
+    return TL_IntersectCurveLine(curve, line, tolerance, events);
+  }
+
+  ON_BoundingBox curve_bbox;
+  if (curve.GetBoundingBox(curve_bbox, false) && curve_bbox.IsValid())
+  {
+    if (!ON_Intersect(curve_bbox, line, tol, nullptr))
+      return 0;
+  }
+
+  std::vector<double> hits;
+  hits.reserve(8);
+  CollectHitsByLipschitzSubdivision(evaluator, curve, tol, 64, hits);
+
+  if (hits.empty())
+    return 0;
+
+  std::vector<SortedCandidate> raw;
+  raw.reserve(hits.size());
+  for (double t : hits)
+    raw.push_back({ t, evaluator.DistanceAt(t), false });
+
+  const double diag = curve_bbox.IsValid() ? curve_bbox.Diagonal().Length() : 1.0;
+  const double param_tol = std::max(1e-13, domain.Length() * 1e-9);
+  // A grazing contact keeps the curve within `tol` of the line over a whole parameter
+  // window, so adjacent refinements report the two ends of that window.  Those ends are
+  // far apart in parameter but nearly coincident in space, which is why this merge is
+  // driven by 3D proximity rather than by the parameter gap.
+  const double point_tol = std::max(2.0 * tol, 1e-6 * diag);
+
+  std::vector<SortedCandidate> merged;
+  merged.reserve(raw.size());
+  for (const SortedCandidate& cand : raw)
+  {
+    bool absorbed = false;
+    for (SortedCandidate& kept : merged)
+    {
+      if (std::fabs(kept.t - cand.t) <= param_tol ||
+          curve.PointAt(kept.t).DistanceTo(curve.PointAt(cand.t)) <= point_tol)
+      {
+        if (cand.dist < kept.dist)
+        {
+          kept.dist = cand.dist;
+          kept.t = cand.t;
+        }
+        absorbed = true;
+        break;
+      }
+    }
+    if (!absorbed)
+      merged.push_back(cand);
+  }
+
+  const bool closed = curve.IsClosed();
+  const double seam_tol = std::max(param_tol, domain.Length() * 1e-9);
+  std::vector<double> emitted;
+
+  for (const SortedCandidate& cand : merged)
+  {
+    double t = std::clamp(cand.t, t_min, t_max);
+    if (closed)
+    {
+      if (std::fabs(t - t_max) <= seam_tol)
+        t = t_min;
+      bool duplicate = false;
+      for (double kept : emitted)
+      {
+        if (std::fabs(kept - t) <= seam_tol)
+        {
+          duplicate = true;
+          break;
+        }
+      }
+      if (duplicate)
+        continue;
+      emitted.push_back(t);
+    }
+
+    const ON_3dPoint pa = curve.PointAt(t);
+    double s = 0.0;
+    if (!line.ClosestPointTo(pa, &s))
+      s = 0.0;
+
+    TL_CurveCurveIntersectionEvent event;
+    event.param_a = t;
+    event.param_b = s;
+    event.point_a = pa;
+    event.point_b = line.PointAt(s);
+    event.is_overlap = false;
+    events.Append(event);
+  }
+
+  return events.Count();
+}

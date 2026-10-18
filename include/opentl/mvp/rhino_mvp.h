@@ -141,6 +141,7 @@ struct LineLineIntersection {
 struct LinePlaneIntersection {
   bool intersects = false;        // True if line is not parallel to plane (and within segment if finite)
   bool is_parallel = false;       // True if line is parallel to plane
+  int status = 0;                 // TL_3DX_LineXPlane: -2 coplanar, -1 parallel, 0 t==0, 1 unique
   double line_param = 0.0;        // Parameter t along line: P(t) = from + t*(to - from)
   double plane_u = 0.0;           // Local plane U coordinate
   double plane_v = 0.0;           // Local plane V coordinate

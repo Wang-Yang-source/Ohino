@@ -20,14 +20,19 @@
  *
  * Disassembly verification (`0x18037b220`):
  * 1. Validates `degree >= 1`, `cv_count > degree`, and `arc.IsValid()`.
- * 2. Computes `order = degree + 1`.
+ * 2. Computes `order = degree + 1`; when `arc.IsCircle()` it tail-calls
+ *    `TL_DeformableCircle` (0x18037b291) instead of running the fitting path.
  * 3. Allocates `ON_NurbsCurve::New()` (if `result == nullptr`) and calls
- *    `curve->Create(3, false, order, cv_count)` + `MakeClampedUniformKnotVector(1.0)`
- *    and sets domain to `arc.DomainRadians()` or `arc.Domain()`.
- * 4. Evaluates Greville abscissae / sample parameters along the arc angle domain
- *    using `ON_Circle::Radius()`, `cos()`, `sin()`, and `ON_Plane::PointAt(x, y)`
- *    (`0x18037b2fd .. 0x18037b4b0`) and solves/assigns CVs so endpoints match `arc.StartPoint()`
- *    and `arc.EndPoint()` and interior points interpolate the arc at Greville parameters.
+ *    `curve->Create(3, false, order, cv_count)` + `MakeClampedUniformKnotVector(1.0)`,
+ *    leaving the clamped knot domain `[0, SpanCount()]` in place while sampling.
+ * 4. Samples CVs with Greville abscissae: `angle = arc.AngleRadians() * greville[i] /
+ *    arc.SpanCount()`, then `ON_Plane::PointAt(R*cos, R*sin)` (0x18037b320..0x18037b3b1).
+ * 5. Solves the interpolating CVs and pins the first/last CV to `arc.StartPoint()` /
+ *    `arc.EndPoint()`.
+ * 6. Finally re-parameterises the finished curve to **arc length**:
+ *    `SetDomain(0, arc.Length())` (0x18037b69f). The radian domain is never the
+ *    result's domain, and `TL_DeformableCircle` uses `[0, 2*pi]` instead — the two
+ *    parameter domains are NOT interchangeable.
  */
 TL_FUNCTION ON_NurbsCurve* TL_DeformableArc2(
   const ON_Arc& arc,

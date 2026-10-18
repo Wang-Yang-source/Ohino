@@ -427,9 +427,53 @@ bool TL_GetSurfaceClosestPoint(const ON_Surface& surface, const ON_3dPoint& test
 
 注意 `TLC_IsMeshEdgeUnwelded` 在原始二进制中是一条 `jmp`（尾调用）而非 `call`——这一点在 `three_tier_tl_kernel_map.json` 的 `iat_targets[].insn` 中被明确记录为 `"jmp"`，OpenTL 的实现同样直接转发，不做额外包装。
 
+#### （i）标量原语、线段最近点与双策略求交（阶段 3 补齐）
+
+| API | 对应原始导出 | RVA | 对齐强度 |
+| --- | --- | --- | --- |
+| `int TL_3DX_LineXPlane(from, dir, plane_pt, normal, &t)` | `tl.dll!TL_3DX_LineXPlane` | `0x305d0` | 逐状态码对齐：`-2` 共面 / `-1` 平行无交 / `0` t 恰为 0 / `1` 唯一交点，含 `|den|>=1` 用 `DBL_MIN`、`|den|<1` 用 `DBL_MAX` 的**饱和除法**（不产生 ±inf） |
+| `double TL_LineDistanceToPoint(const ON_Line*, ON_3dPoint, bool maximum)` | `rhcommon_c.dll!ON_Line_DistanceToPoint` | `0xd0210` | `bool` 选 min/max 双模；空指针返回 **−1.0** 哨兵（不是 0） |
+| `double TL_LineDistanceToLine(const ON_Line*, const ON_Line*, bool maximum)` | `rhcommon_c.dll!ON_Line_DistanceToLine` | `0xd0290` | 同上 |
+| `bool TL_GetClosestPoint(ON_Line, ON_Line, double*, double*)` | `tl.dll!TL_GetClosestPoint` 4 参 | `0x214670` | 解析优先 + `[0,1]` 钳制重投影 + 端点投影回退；`true` 只表示"给出可用参数对"，**不表示真相交** |
+| `bool TL_GetClosestPoint(..., double max_dist, const ON_Interval*, const ON_Interval*)` | `tl.dll!TL_GetClosestPoint` 7 参 | `0x214540` | 按二进制把线段提升为 **degree-1 `ON_BezierCurve`** 再委派（数学等价，非逐指令），支持子区间与 `maximum_distance` 门限 |
+| `int TL_IntersectCurveLineBySubdivision(...)` | （替代路径，见下） | — | 独立的第二求交算法，用于与主求解器**对拍** |
+
+`TL_3DX_LineXPlane` 的状态码同时被推到 MVP 层：`LinePlaneIntersection::status` 现在直接携带 `-2/-1/0/1`，调用方不必再从 `intersects`/`is_parallel` 反推退化原因。
+
+**关于"双策略对拍"的如实说明**：`rhcommon_c!ON_Intersect_CurveLine` 的真实下游是 opennurbs 的 `ON_Curve::IntersectCurve`，但 `external/opennurbs`（v8.35 分支）**早于 `ON_X_EVENT` 的出现**，既没有该类型也没有 curve×curve 求交器，因此"直调 `IntersectCurve` 与原实现走同一条下游"这条路在本仓库不可行。替代方案是新增 `TL_IntersectCurveLineBySubdivision`：以"点到直线距离是 1-Lipschitz"为**严格下界**做剪枝（`min(D(t_i),D(t_i+1)) − |C(t_i)−C(t_i+1)|`），仅对下界低于容差的子区间做 Newton 抛光，再在测试里与主求解器逐事件对拍（圆×直径 / 圆×弦 / 圆×切线 / 圆×无交）。
+
 ---
 
-### 4.4 双格式文件序列化能力
+### 4.4 四视图（Top / Perspective / Front / Right）
+
+对应 Rhino 模型空间的经典 2×2 布局。这是**内核侧**实现：相机框架、世界↔屏幕投影、屏幕射线（拾取用）、平移/缩放/缩放到适合、确定性 JSON 持久化；**不含渲染与窗口系统**（OpenTL 不产生像素）。
+
+| 条目 | 语义 |
+| --- | --- |
+| 布局 | `TL_FourViewLayout`：Top(0) / Perspective(1) / Front(2) / Right(3)，左上顺时针 2×2；`SetCanvasSize` 保持等比切分 |
+| 标准视图 | Top：视线 −Z、上方向 +Y（屏幕 x=+X, y=+Y）；Front：视线 +Y、上方向 +Z（x=+X, y=+Z）；Right：视线 −X、上方向 +Z（x=+Y, y=+Z） |
+| 投影 | `TL_PROJECTION_PARALLEL`（平行，`m_scale` 像素/单位）与 `TL_PROJECTION_PERSPECTIVE`（`m_lens_mm` 35mm 等效焦距 → 垂直 FOV，`m_target_distance` 决定眼点） |
+| 世界→屏幕 | `WorldToScreen`（屏幕坐标原点在**画布**左上、y 向下；透视下落在眼后返回 false） |
+| 屏幕→世界 | `ScreenToRay`（拾取射线）、`ScreenToCameraPlane`（过目标点且垂直视线的平面）、`ScreenToPlane`（与任意构造平面求交） |
+| 导航 | `Pan(dx,dy)`（屏幕像素增量，平行视图改 target、透视视图同步平移眼点）、`Zoom(factor, anchor)`（带光标锚定）、`ZoomToFit(bbox, margin)` |
+| 拾取 | `PickPoint(view, screen, points, pixel_tol)` 返回屏幕距离最近的点索引，无命中返回 −1 |
+| 持久化 | `ToJson()/FromJson()/SaveJson()/LoadJson()`，schema `opentl.fourview` v1，往返后相机/尺度/矩形完全一致 |
+
+```cpp
+TL_FourViewLayout layout = TL_FourViewLayout::Default(1600, 900);
+layout.ZoomToFitAll(scene_bbox, 0.9);
+
+ON_2dPoint screen;
+layout.View(0).WorldToScreen(ON_3dPoint(1, 2, 0), screen);   // Top 视图投影
+ON_3dPoint from; ON_3dVector dir;
+layout.View(1).ScreenToRay(screen, from, dir);               // 透视拾取射线
+```
+
+```bash
+./opentl/build/opentl_cli --views --out-dir /tmp/opentl_views
+```
+
+### 4.5 双格式文件序列化能力
 
 OpenTL 同时提供**两种互补**的持久化格式：一种为零依赖、可逐字节比对的本地格式；一种为与 Rhino 生态互通的工业格式。
 
@@ -504,6 +548,7 @@ opentl/
 │   ├── meshing/tl_meshing.h             # 未焊接边检测、曲面网格化
 │   ├── booleans/tl_booleans.h           # 面内点分类（布尔分类器）
 │   ├── subd/tl_subd.h                   # SubD 盒体
+│   ├── viewport/tl_viewport.h           # 四视图（Top/Perspective/Front/Right）相机与投影
 │   └── c_api/rhcommon_c_bridge.h        # 与 rhcommon_c.dll 对齐的 C ABI
 ├── src/
 │   ├── tl_promote.cpp
@@ -514,6 +559,7 @@ opentl/
 │   ├── meshing/
 │   ├── booleans/
 │   ├── subd/
+│   ├── viewport/tl_viewport.cpp
 │   └── c_api/rhcommon_c_bridge.cpp
 ├── tests/test_opentl.cpp                # 自动化测试（ctest 注册为 opentl_tests）
 └── build/                               # 构建产物（含 opennurbs_build 子构建）
@@ -584,8 +630,9 @@ cmake --build build --config Release -j8
 > | 项目 | 结果 |
 > | --- | --- |
 > | clean build（删除 `build/` 后重新配置） | 通过，0 error；`opentl/src`、`apps`、`tests` 0 warning（其余 warning 均来自 openNURBS/zlib 第三方源码） |
-> | `opentl_tests` | 12 个测试组、467 项检查、0 失败 |
-> | `ctest` | 2/2 通过（`opentl_tests`、`opentl_cli_demo`） |
+> | `opentl_tests` | 14 个测试组、641 项检查、0 失败 |
+> | `ctest` | 3/3 通过（`opentl_tests`、`opentl_cli_demo`、`opentl_cli_views`） |
+> | 四视图布局往返 | `opentl_cli --views` 退出码 0，`views.roundtrip=identical` |
 > | CLI 端到端演示 | 退出码 0，`io.roundtrip json_digest_identical=1 3dm_digest_identical=1` |
 > | 场景摘要哈希 | `scene_digest=a9b93db0b90a1441`（两次独立运行完全一致） |
 > | `.otscene.json` 确定性 | 两次运行 SHA-256 相同：`8b4831c9c911fbe1d5b5033695ca680b02a21c179ad7b6408cd4f2e835ab519f` |
@@ -888,6 +935,9 @@ MVP 的目标是**打通一条端到端可验证的链路**（几何 → 场景 
 - **`tl.dll` 的 8 642 个导出中，MVP 覆盖不到 1%**。`core_utils`(3 008)、`brep_topology`(1 678)、`nurbs_eval_core`(739) 的主体均未触及；`subd` 分类只有 2 个导出，说明原产品的 SubD 主体不在 `tl.dll` 而在别处（`RhinoCore.dll`），本项目未跟进该线索。
 - **四个 `*_binary_layout.json` 是失败回执**（见 8.4），段布局结论来自 `inspect_artifact`；若后续配置 `REA_PWNTOOLS_PYTHON`，应重跑并把结果并入证据集，同时更新本 README 的对应行。
 - **证据合订本已落盘，但三层链并非处处闭合**。`re-database/rea/mvp_static_evidence.json` 已记录 12 个函数、1 297 条逐指令清单、80 个唯一 IAT 目标，三层校验 26/29 通过。未通过的 3 项集中在 `tl.dll` 侧：`TL_3DX_LineXPlane`、`TL_GetClosestPoint`（4 参/7 参重载）在导出表中存在，但 `three_tier_full_map.json` 中没有指向它们的 tier-2 → tier-3 引用边，因此**只有"导出存在"这一层证据**，其内部实现是按数学等价重写的（`re-database/rea/mvp_static_evidence.json` 的 `functions[].opentl_status` 已逐项标注 `gap` / `partial` / `declared_no_implementation`）。不要把这三项当作"逐指令对齐"。
+- **三处注释/实现曾与二进制不符，已在阶段 3 订正**：`TL_IsMeshEdgeUnwelded`（要求 `m_topf_count == 2` 而非 `<= 1`，判据是"四个网格顶点索引两两互异"）、`TL_Brep::PointIsOnFace`（越界返回 **−1** 而非 0；容差钳位到 `[sqrt(DBL_EPSILON), 1% 面域长度]`；iso 参数分解先于 loop 包含判定）、`TL_DeformableArc2`（结果参数域是**弧长** `[0, Length()]`，不是弧度域）。修正后的行为均有测试断言。
+- **`ON_Curve::IntersectCurve` 不可用**：`external/opennurbs` 版本没有 `ON_X_EVENT`，无法复刻 `ON_Intersect_CurveLine` 的下游路径。次级策略改为自研 `TL_IntersectCurveLineBySubdivision`（Lipschitz 严格下界剪枝 + Newton），用于对拍而非冒充原实现。
+- **四视图只是相机与投影**：`viewport/` 提供世界↔屏幕、拾取射线、平移/缩放/缩放到适合与 JSON 往返，**没有** OpenGL/Metal 渲染、窗口、文字标注或 Gumball。`m_pbox` 类缓存也未实现（`PointIsOnFace` 的 pbox 早退由 trim 曲线采样推导）。
 - **不执行原始二进制**是硬约束：任何"跑一下原 DLL 看看结果"的验证方式都被排除。这既是合规要求，也意味着**没有金标准输出可比对**——正确性依赖数学性质（往返固定点、距离不变性、弧长单调性）与 openNURBS 自身的参考实现，而不是与原产品逐值对齐。
 
 ### 9.5 后续演进的优先级建议
@@ -901,7 +951,8 @@ MVP 的目标是**打通一条端到端可验证的链路**（几何 → 场景 
 | P1 | 模型级容差与鲁棒性（区间算术回退） | 求交/最近点内核 |
 | P2 | 对象属性完整模型（颜色/线型/材质引用）与 Undo 栈 | 场景层重构 |
 | P2 | `.3dm` 组件保真（idef、annotation、userdata 透传） | `ONX_Model` 全表读写 |
-| P3 | 显示网格与最小视口（OpenGL/Metal 后端） | 网格化 + 相机模型 |
+| P2 | 四视图渲染后端（OpenGL/Metal）、视口内图层覆盖、Gumball | `viewport/` 相机与投影（已就绪） |
+| P3 | 显示网格（渲染用三角化、自适应细分） | 网格化 + 光栅化 |
 
 ---
 

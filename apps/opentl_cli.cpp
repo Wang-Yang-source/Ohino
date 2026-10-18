@@ -525,11 +525,78 @@ bool StageSerialization(DemoScene& scene, const std::string& out_dir, int* exit_
   return true;
 }
 
+// ---------------------------------------------------------------------------
+// --views : four-view layout demo (Top / Perspective / Front / Right)
+// ---------------------------------------------------------------------------
+
+int RunFourViewDemo(const std::string& out_dir, int* exit_code) {
+  TL_FourViewLayout layout = TL_FourViewLayout::Default(1600, 900);
+
+  ON_BoundingBox box;
+  box.Set(ON_3dPoint(-10.0, -6.0, -2.0));
+  box.Set(ON_3dPoint(10.0, 6.0, 8.0), true);
+  layout.ZoomToFitAll(box, 0.9);
+
+  const ON_3dPoint probes[3] = {
+    ON_3dPoint(0.0, 0.0, 0.0), ON_3dPoint(10.0, 0.0, 0.0), ON_3dPoint(0.0, 6.0, 8.0)
+  };
+
+  std::printf("views.canvas=%dx%d count=%d\n", layout.CanvasWidth(), layout.CanvasHeight(),
+              layout.Count());
+  for (int i = 0; i < layout.Count(); ++i) {
+    const TL_Viewport& vp = layout.View(i);
+    const ON_3dPoint eye = vp.CameraLocation();
+    std::printf("views[%d].name=%s projection=%s\n", i, vp.m_name.c_str(),
+                (TL_PROJECTION_PERSPECTIVE == vp.m_projection) ? "perspective" : "parallel");
+    std::printf("views[%d].rect=%d,%d %dx%d\n", i, vp.m_left, vp.m_top, vp.m_width, vp.m_height);
+    std::printf("views[%d].camera=%s target=%s dir=%s\n", i, Coord(ON_3dPoint(eye)).c_str(),
+                Coord(vp.m_target).c_str(), Vec(vp.m_camera_dir).c_str());
+    std::printf("views[%d].scale=%s lens=%s distance=%s\n", i, Fixed(vp.m_scale, 6).c_str(),
+                Fixed(vp.m_lens_mm, 3).c_str(), Fixed(vp.m_target_distance, 6).c_str());
+    for (int k = 0; k < 3; ++k) {
+      ON_2dPoint screen = ON_2dPoint::Origin;
+      if (!vp.WorldToScreen(probes[k], screen)) {
+        std::printf("views[%d].proj[%d]=<behind>\n", i, k);
+        continue;
+      }
+      std::printf("views[%d].proj[%d]=%s,%s\n", i, k, Fixed(screen.x, 3).c_str(),
+                  Fixed(screen.y, 3).c_str());
+    }
+  }
+
+  std::error_code ec;
+  std::filesystem::create_directories(out_dir, ec);
+  const std::string path = (std::filesystem::path(out_dir) / "fourview.json").string();
+  const bool saved = layout.SaveJson(path);
+  std::printf("views.save=%s path=%s\n", saved ? "ok" : "failed", path.c_str());
+
+  TL_FourViewLayout reloaded;
+  const bool loaded = saved && reloaded.LoadJson(path);
+  bool identical = loaded;
+  if (loaded) {
+    for (int i = 0; i < layout.Count() && identical; ++i) {
+      const TL_Viewport& a = layout.View(i);
+      const TL_Viewport& b = reloaded.View(i);
+      identical = a.m_name == b.m_name && a.m_standard_view == b.m_standard_view &&
+                  a.m_projection == b.m_projection && a.m_left == b.m_left &&
+                  a.m_top == b.m_top && a.m_width == b.m_width && a.m_height == b.m_height &&
+                  std::fabs(a.m_scale - b.m_scale) <= 1e-9 &&
+                  a.m_target.DistanceTo(b.m_target) <= 1e-9;
+    }
+  }
+  std::printf("views.roundtrip=%s\n", identical ? "identical" : "mismatch");
+  std::printf("views.status=%s\n", (saved && identical) ? "OK" : "FAILED");
+
+  if (nullptr != exit_code) *exit_code = (saved && identical) ? 0 : 1;
+  return (saved && identical) ? 0 : 1;
+}
+
 void PrintUsage() {
   std::printf("usage:\n");
   std::printf("  opentl_cli [--demo] [--out-dir <dir>]     run the deterministic MVP demo\n");
   std::printf("  opentl_cli --inspect-3dm <file.3dm>       summarize a .3dm archive\n");
   std::printf("  opentl_cli --inspect-json <file.json>     summarize an .otscene.json file\n");
+  std::printf("  opentl_cli --views [--out-dir <dir>]     four-view layout demo (Top/Persp/Front/Right)\n");
 }
 
 }  // namespace
@@ -568,6 +635,8 @@ int main(int argc, char** argv) {
       }
       mode = "inspect-json";
       inspect_path = argv[++i];
+    } else if ("--views" == arg) {
+      mode = "views";
     } else if ("--help" == arg || "-h" == arg) {
       PrintUsage();
       return 0;
@@ -579,6 +648,13 @@ int main(int argc, char** argv) {
   }
 
   std::printf("opentl_cli mode=%s\n", mode.c_str());
+
+  if ("views" == mode) {
+    int code = 0;
+    RunFourViewDemo(out_dir, &code);
+    ON::End();
+    return code;
+  }
 
   if ("inspect-3dm" == mode || "inspect-json" == mode) {
     opentl::mvp::SceneDocument document;

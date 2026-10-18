@@ -137,9 +137,12 @@ TL_FUNCTION ON_NurbsCurve* TL_DeformableArc2(
     return nullptr;
   }
 
-  const ON_Interval arc_dom = arc.DomainRadians();
-  if (arc_dom.IsIncreasing())
-    curve->SetDomain(arc_dom.Min(), arc_dom.Max());
+  // tl.dll 0x18037b307 samples CVs on the *original* clamped knot domain
+  // [0, SpanCount()]; the arc-length domain is only assigned at the end
+  // (0x18037b69f `SetDomain(0, ON_Arc::Length())`).  Sampling in radians here
+  // (the previous implementation) produced the wrong parameterisation.
+  const double angle_span = arc.AngleRadians();
+  const int span_count = std::max(1, curve->SpanCount());
 
   std::vector<double> grev(static_cast<size_t>(cv_count), 0.0);
   if (!curve->GetGrevilleAbcissae(grev.data()))
@@ -153,16 +156,15 @@ TL_FUNCTION ON_NurbsCurve* TL_DeformableArc2(
     }
   }
 
-  const ON_Interval cdom = curve->Domain();
   const double radius = arc.Radius();
   const ON_Plane& plane = arc.Plane();
 
   std::vector<ON_3dPoint> target_pts(static_cast<size_t>(cv_count));
   for (int i = 0; i < cv_count; ++i)
   {
-    double norm_s = cdom.NormalizedParameterAt(grev[static_cast<size_t>(i)]);
-    norm_s = std::clamp(norm_s, 0.0, 1.0);
-    const double angle = arc_dom.ParameterAt(norm_s);
+    // angle = AngleRadians() * greville / SpanCount()   (0x18037b320..0x18037b3b1)
+    const double angle = angle_span * grev[static_cast<size_t>(i)] /
+      static_cast<double>(span_count);
     const double x = radius * std::cos(angle);
     const double y = radius * std::sin(angle);
     target_pts[static_cast<size_t>(i)] = plane.PointAt(x, y);
@@ -192,6 +194,12 @@ TL_FUNCTION ON_NurbsCurve* TL_DeformableArc2(
     for (int i = 0; i < cv_count; ++i)
       curve->SetCV(i, target_pts[static_cast<size_t>(i)]);
   }
+
+  // tl.dll 0x18037b69f: the finished curve is re-parameterised to arc length,
+  // i.e. domain = [0, ON_Arc::Length()] (NOT the radian domain).
+  const double arc_length = arc.Length();
+  if (ON_IsValid(arc_length) && arc_length > 0.0)
+    curve->SetDomain(0.0, arc_length);
 
   return curve;
 }
