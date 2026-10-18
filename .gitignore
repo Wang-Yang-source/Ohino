@@ -1,0 +1,14 @@
+build/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+Testing/
+*.a
+*.dylib
+*.so
+*.dll
+*.exe
+.DS_Store
+*.user
+*.swp
+*.tmp
