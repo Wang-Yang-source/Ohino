@@ -44,10 +44,14 @@ struct TL_CLASS TL_GuiStudioInfo
 
   // Optional 3D Gumball + OSnap projection context across the four viewports
   const TL_FourViewLayout* layout = nullptr;
+  const opentl::mvp::SceneDocument* scene = nullptr; ///< Optional scene for drawing yellow selection highlight
+  uint64_t selected_object_id = 0;                   ///< Highlighted `SceneObject::id` in the 3D viewports
   bool show_gumball = true;
   ON_3dPoint gumball_origin = ON_3dPoint::Origin;
   double gumball_radius = 12.0;
   int active_gumball_axis = -1; ///< -1 none, 0 X, 1 Y, 2 Z
+  bool box_selecting = false;   ///< True while dragging a window/crossing selection marquee
+  float box_x0 = 0.0f, box_y0 = 0.0f, box_x1 = 0.0f, box_y1 = 0.0f;
 
   // Grasshopper interactive state
   int active_gh_category = 4;   ///< Default tab index: 4 = "Curve"
@@ -112,6 +116,12 @@ struct TL_CLASS TL_StudioInputState
   ON_3dPoint gumball_origin = ON_3dPoint::Origin;
   double gumball_radius = 12.0;
   uint64_t selected_object_id = 0; ///< Currently selected `SceneObject::id` in the 3D viewports (0 = none)
+  std::vector<uint64_t> selected_object_ids; ///< Multi-selected `SceneObject::id`s from window/crossing marquee
+  bool box_selecting = false;      ///< True during Shift+LMB marquee drag in a 3D viewport
+  float box_start_x = 0.0f;
+  float box_start_y = 0.0f;
+  float box_end_x = 0.0f;
+  float box_end_y = 0.0f;
   ON_3dPoint cursor_world = ON_3dPoint::Origin;
   std::string command_buffer;      ///< Live interactive command line input buffer
   std::string last_command_result; ///< Most recent command execution feedback
@@ -143,6 +153,24 @@ TL_FUNCTION uint64_t TL_PickSceneObjectAtScreen(
   float screen_y,
   double pixel_tol = 10.0,
   ON_3dPoint* out_pivot = nullptr);
+
+/**
+ * Window / Crossing marquee selection inside viewport `view_index`:
+ *   - Left-to-right (`x1 >= x0`): Window selection — only objects whose sampled screen points lie
+ *     entirely inside `[min_x, max_x] x [min_y, max_y]`;
+ *   - Right-to-left (`x1 < x0`): Crossing selection — any object with at least one sampled screen
+ *     point inside `[min_x, max_x] x [min_y, max_y]`.
+ * Returns the list of matched `SceneObject::id`s.
+ */
+TL_FUNCTION std::vector<uint64_t> TL_SelectSceneObjectsInRect(
+  const opentl::mvp::SceneDocument& scene,
+  const TL_FourViewLayout& layout,
+  int view_index,
+  float x0,
+  float y0,
+  float x1,
+  float y1,
+  ON_3dPoint* out_combined_pivot = nullptr);
 
 /**
  * Execute a Rhino-style command line string against `scene`, `gh_doc`, `layout`, and `state`.

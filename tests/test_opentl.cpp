@@ -3029,7 +3029,7 @@ void TestGrasshopperAndStudioGui() {
     // (a) Instantiate and evaluate every single battery in the 182-component catalog
     TL_GhDocument all_doc;
     const auto& specs = TL_GhComponentCatalog::All();
-    CHECK_EQ_INT((int)specs.size(), 188);
+    CHECK_EQ_INT((int)specs.size(), 190);
     int instantiated = 0;
     for (size_t i = 0; i < specs.size(); ++i) {
       const int nidx = all_doc.AddComponent(specs[i].name, 40.0f + (float)(i % 8) * 90.0f,
@@ -3349,6 +3349,69 @@ void TestStage17ModelingAndPicking() {
     // ... and _Undo brings it back
     CHECK(TL_ExecuteStudioCommand("_Undo", &sc, &gd, &lay, &rects, st));
     CHECK_EQ_INT((int)sc.ObjectCount(), 3);
+
+    // ---- Stage 18: Window vs Crossing marquee selection + Gumball transform + _Move/_Rotate/_Scale ----
+    // Window selection (left-to-right `x1 >= x0`) around point A only: C is a circle around (0,0) so not inside
+    std::vector<uint64_t> win_sel = TL_SelectSceneObjectsInRect(
+      sc, lay, 0, (float)pa.x - 6.0f, (float)pa.y - 6.0f, (float)pa.x + 6.0f, (float)pa.y + 6.0f);
+    CHECK_EQ_INT((int)win_sel.size(), 1);
+    if (!win_sel.empty()) CHECK_EQ_INT((int)win_sel[0], (int)id_a);
+
+    // Crossing selection (right-to-left `x1 < x0`) touching only one point `(5,0,0)` of circle C
+    // selects C even though the rest of the circle lies outside the box!
+    std::vector<uint64_t> win_partial = TL_SelectSceneObjectsInRect(
+      sc, lay, 0, (float)pc.x - 4.0f, (float)pc.y - 4.0f, (float)pc.x + 4.0f, (float)pc.y + 4.0f);
+    CHECK_EQ_INT((int)win_partial.size(), 0); // Window requires ALL samples inside
+    std::vector<uint64_t> cross_partial = TL_SelectSceneObjectsInRect(
+      sc, lay, 0, (float)pc.x + 4.0f, (float)pc.y - 4.0f, (float)pc.x - 4.0f, (float)pc.y + 4.0f);
+    CHECK_EQ_INT((int)cross_partial.size(), 1);
+    if (!cross_partial.empty()) CHECK_EQ_INT((int)cross_partial[0], (int)id_c);
+
+    // _Move / _Rotate / _Scale commands on selected object
+    st.selected_object_id = id_a;
+    st.selected_object_ids = { id_a };
+    CHECK(TL_ExecuteStudioCommand("_Move 5 10 0", &sc, &gd, &lay, &rects, st));
+    CHECK(sc.FindById(id_a) != nullptr);
+    if (const auto* oa = sc.FindById(id_a))
+      CHECK(oa->point_val.DistanceTo(ON_3dPoint(-15, -10, 0)) < 1e-9);
+    CHECK(TL_ExecuteStudioCommand("_Undo", &sc, &gd, &lay, &rects, st));
+    if (const auto* oa = sc.FindById(id_a))
+      CHECK(oa->point_val.DistanceTo(ON_3dPoint(-20, -20, 0)) < 1e-9);
+  }
+
+  // ---- Stage 18: Solid Brep Edge Chamfer (`TL_ChamferBrepEdge`) & Fillet (`TL_FilletBrepEdge`) ----
+  {
+    const ON_3dPoint corners[8] = {
+      ON_3dPoint(0, 0, 0), ON_3dPoint(10, 0, 0), ON_3dPoint(10, 10, 0), ON_3dPoint(0, 10, 0),
+      ON_3dPoint(0, 0, 10), ON_3dPoint(10, 0, 10), ON_3dPoint(10, 10, 10), ON_3dPoint(0, 10, 10)
+    };
+    ON_Brep* box = ON_BrepBox(corners);
+    CHECK(box != nullptr);
+    if (box) {
+      // Chamfer edge 0 with distance d = 2.0 on a 10x10x10 cube (V_0 = 1000):
+      // Removed triangular prism volume = L * (0.5 * d * d) = 10 * 2.0 = 20 -> V_chamfer = 980.0
+      ON_Brep chm;
+      CHECK(TL_ChamferBrepEdge(*box, 0, 2.0, chm));
+      CHECK_EQ_INT(chm.m_F.Count(), 7);
+      ON_Mesh chm_mesh;
+      TL_ExtractBrepMesh(chm, chm_mesh, false);
+      const double v_chm = std::fabs(TL_MeshSignedVolume(chm_mesh));
+      CHECK_NEAR(v_chm, 980.0, 1e-4);
+
+      // Fillet edge 0 with radius r = 2.0 on a 10x10x10 cube:
+      // Exact analytical volume = 1000 - L * r^2 * (1 - pi/4) = 1000 - 40*(1 - pi/4) = 991.4159265
+      ON_Brep fil;
+      CHECK(TL_FilletBrepEdge(*box, 0, 2.0, fil));
+      CHECK(fil.m_F.Count() >= 6);
+      ON_Mesh fil_mesh;
+      TL_ExtractBrepMesh(fil, fil_mesh, false);
+      const double v_fil = std::fabs(TL_MeshSignedVolume(fil_mesh));
+      const double v_expected = 1000.0 - 10.0 * 4.0 * (1.0 - 0.25 * ON_PI);
+      CHECK_NEAR(v_fil, v_expected, 0.15);
+      std::printf("   Brep edge chamfer V=%.4f (exact 980.0000), fillet V=%.4f (exact %.4f)\n",
+                  v_chm, v_fil, v_expected);
+      delete box;
+    }
   }
 
   EndSection();

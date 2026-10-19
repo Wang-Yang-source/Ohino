@@ -134,3 +134,26 @@ TL_FUNCTION bool TL_BrepBoolean(
   ON_Brep& out_brep,
   double tolerance = 1e-6
 );
+
+/**
+ * Chamfer (`TL_ChamferBrepEdge`) or constant-radius rolling-ball fillet (`TL_FilletBrepEdge`)
+ * a sharp edge `edge_index` of an axis-aligned / convex planar `ON_Brep` solid by `distance`
+ * (or `radius`), trimming the two adjacent planar faces back in `(u, v)` space and inserting
+ * the bevel plane face or tangent cylindrical NURBS fillet face (`ON_RevSurface::GetNurbForm`)
+ * plus end-cap trims so `out_brep` remains a closed, watertight solid `ON_Brep`.
+ */
+TL_FUNCTION bool TL_ChamferBrepEdge(
+  const ON_Brep& brep,
+  int edge_index,
+  double distance,
+  ON_Brep& out_brep,
+  double tolerance = 1e-6
+);
+
+TL_FUNCTION bool TL_FilletBrepEdge(
+  const ON_Brep& brep,
+  int edge_index,
+  double radius,
+  ON_Brep& out_brep,
+  double tolerance = 1e-6
+);

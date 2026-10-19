@@ -195,6 +195,74 @@ void DrawViewportGumballAndHud(TL_GuiOverlay& ov, const TL_GuiStudioInfo& info) 
     AddFill(ov, (float)c2d.x - 3.5f, (float)c2d.y - 3.5f, 7.0f, 7.0f, kText, kLavender, 1.0f);
     AddFill(ov, (float)c2d.x + 8.0f, (float)c2d.y - 16.0f, 26.0f, 12.0f, kSurface0, kYellow, 1.0f);
     AddText(ov, (float)c2d.x + 11.0f, (float)c2d.y - 13.0f, 0.95f, "CEN", kYellow);
+
+    // Draw yellow selection highlight wireframe / control points for `info.selected_object_id`
+    if (info.scene && info.selected_object_id != 0)
+    {
+      if (const opentl::mvp::SceneObject* sel = info.scene->FindById(info.selected_object_id))
+      {
+        std::vector<ON_3dPoint> chain;
+        bool closed = false;
+        switch (sel->kind)
+        {
+          case opentl::mvp::ObjectKind::Point:
+            chain.push_back(sel->point_val);
+            break;
+          case opentl::mvp::ObjectKind::Line:
+            chain.push_back(sel->line_val.from);
+            chain.push_back(sel->line_val.to);
+            break;
+          case opentl::mvp::ObjectKind::Polyline:
+            for (int k = 0; k < sel->polyline_val.Count(); ++k) chain.push_back(sel->polyline_val[k]);
+            break;
+          case opentl::mvp::ObjectKind::Circle:
+            for (int k = 0; k < 32; ++k) chain.push_back(sel->circle_val.PointAt(2.0 * ON_PI * k / 32.0));
+            closed = true;
+            break;
+          case opentl::mvp::ObjectKind::Arc:
+            for (int k = 0; k <= 24; ++k)
+              chain.push_back(sel->arc_val.PointAt(sel->arc_val.Domain().ParameterAt(k / 24.0)));
+            break;
+          case opentl::mvp::ObjectKind::NurbsCurve:
+            if (sel->nurbs_val.IsValid())
+            {
+              for (int k = 0; k <= 32; ++k)
+                chain.push_back(sel->nurbs_val.PointAt(sel->nurbs_val.Domain().ParameterAt(k / 32.0)));
+            }
+            break;
+          default:
+            break;
+        }
+        if (chain.size() == 1)
+        {
+          ON_2dPoint s2;
+          if (vp.WorldToScreen(chain[0], s2))
+            AddFill(ov, (float)s2.x - 4.0f, (float)s2.y - 4.0f, 8.0f, 8.0f, kYellow, kPeach, 1.5f);
+        }
+        else if (chain.size() >= 2)
+        {
+          const size_t lim = closed ? chain.size() : (chain.size() - 1);
+          for (size_t k = 0; k < lim; ++k)
+          {
+            ON_2dPoint a2, b2;
+            if (vp.WorldToScreen(chain[k], a2) && vp.WorldToScreen(chain[(k + 1) % chain.size()], b2))
+              AddLine(ov, (float)a2.x, (float)a2.y, (float)b2.x, (float)b2.y, kYellow, 2.4f);
+          }
+        }
+      }
+    }
+  }
+  if (info.box_selecting)
+  {
+    const float rx = std::min(info.box_x0, info.box_x1);
+    const float ry = std::min(info.box_y0, info.box_y1);
+    const float rw = std::fabs(info.box_x1 - info.box_x0);
+    const float rh = std::fabs(info.box_y1 - info.box_y0);
+    const float* border = (info.box_x1 >= info.box_x0) ? kSapphire : kGreen;
+    AddLine(ov, rx, ry, rx + rw, ry, border, 1.5f);
+    AddLine(ov, rx + rw, ry, rx + rw, ry + rh, border, 1.5f);
+    AddLine(ov, rx + rw, ry + rh, rx, ry + rh, border, 1.5f);
+    AddLine(ov, rx, ry + rh, rx, ry, border, 1.5f);
   }
 }
 
@@ -744,6 +812,91 @@ uint64_t TL_PickSceneObjectAtScreen(
   return best_id;
 }
 
+std::vector<uint64_t> TL_SelectSceneObjectsInRect(
+  const opentl::mvp::SceneDocument& scene,
+  const TL_FourViewLayout& layout,
+  int view_index,
+  float x0,
+  float y0,
+  float x1,
+  float y1,
+  ON_3dPoint* out_combined_pivot)
+{
+  const TL_Viewport& vp = layout.View(std::clamp(view_index, 0, 3));
+  const bool window_mode = (x1 >= x0); // left-to-right = Window, right-to-left = Crossing
+  const double min_x = std::min(x0, x1), max_x = std::max(x0, x1);
+  const double min_y = std::min(y0, y1), max_y = std::max(y0, y1);
+
+  std::vector<uint64_t> result;
+  ON_BoundingBox combined_bb;
+
+  for (const auto& obj : scene.Objects())
+  {
+    std::vector<ON_3dPoint> samples;
+    switch (obj.kind)
+    {
+      case opentl::mvp::ObjectKind::Point:
+        samples.push_back(obj.point_val);
+        break;
+      case opentl::mvp::ObjectKind::Line:
+        for (int k = 0; k <= 8; ++k) samples.push_back(obj.line_val.PointAt(k / 8.0));
+        break;
+      case opentl::mvp::ObjectKind::Polyline:
+        for (int i = 0; i < obj.polyline_val.Count(); ++i) samples.push_back(obj.polyline_val[i]);
+        break;
+      case opentl::mvp::ObjectKind::Circle:
+        for (int k = 0; k < 24; ++k) samples.push_back(obj.circle_val.PointAt(2.0 * ON_PI * k / 24.0));
+        break;
+      case opentl::mvp::ObjectKind::Arc:
+        for (int k = 0; k <= 16; ++k)
+          samples.push_back(obj.arc_val.PointAt(obj.arc_val.Domain().ParameterAt(k / 16.0)));
+        break;
+      case opentl::mvp::ObjectKind::Plane:
+      {
+        const ON_Plane& pl = obj.plane_val;
+        for (int iu = -1; iu <= 1; ++iu)
+          for (int iv = -1; iv <= 1; ++iv)
+            samples.push_back(pl.origin + pl.xaxis * (5.0 * iu) + pl.yaxis * (5.0 * iv));
+        break;
+      }
+      case opentl::mvp::ObjectKind::NurbsCurve:
+        if (obj.nurbs_val.IsValid())
+        {
+          for (int k = 0; k <= 24; ++k)
+            samples.push_back(obj.nurbs_val.PointAt(obj.nurbs_val.Domain().ParameterAt(k / 24.0)));
+        }
+        break;
+      default:
+        break;
+    }
+    if (samples.empty()) continue;
+
+    bool all_in = true;
+    bool any_in = false;
+    for (const ON_3dPoint& p : samples)
+    {
+      ON_2dPoint s2;
+      if (!vp.WorldToScreen(p, s2)) { all_in = false; continue; }
+      const bool inside = (s2.x >= min_x && s2.x <= max_x && s2.y >= min_y && s2.y <= max_y);
+      if (inside) any_in = true;
+      else        all_in = false;
+    }
+    if ((window_mode && all_in) || (!window_mode && any_in))
+    {
+      result.push_back(obj.id);
+      const ON_BoundingBox obb = obj.GetBoundingBox();
+      if (obb.IsValid())
+      {
+        if (combined_bb.IsValid()) combined_bb.Union(obb);
+        else                       combined_bb = obb;
+      }
+    }
+  }
+  if (!result.empty() && nullptr != out_combined_pivot && combined_bb.IsValid())
+    *out_combined_pivot = combined_bb.Center();
+  return result;
+}
+
 bool TL_ExecuteStudioCommand(
   const std::string& command_line,
   opentl::mvp::SceneDocument* scene,
@@ -791,6 +944,16 @@ bool TL_ExecuteStudioCommand(
       return false;
     }
     push_undo();
+    if (!state.selected_object_ids.empty())
+    {
+      size_t removed = 0;
+      for (uint64_t sid : state.selected_object_ids)
+        if (scene->DeleteObject(sid)) ++removed;
+      state.selected_object_ids.clear();
+      state.selected_object_id = 0;
+      set_fb("COMMAND: _DELETE (REMOVED " + std::to_string(removed) + " SELECTED OBJECTS)");
+      return removed > 0;
+    }
     uint64_t target = state.selected_object_id;
     bool found = false;
     if (0 != target)
@@ -804,6 +967,49 @@ bool TL_ExecuteStudioCommand(
     state.selected_object_id = 0;
     set_fb("COMMAND: _DELETE (REMOVED OBJECT #" + std::to_string(target) + ")");
     return true;
+  }
+
+  if (cmd == "MOVE" || cmd == "ROTATE" || cmd == "SCALE") {
+    if (!scene || scene->Objects().empty()) return false;
+    std::vector<uint64_t> targets = state.selected_object_ids;
+    if (targets.empty())
+    {
+      if (state.selected_object_id != 0 && scene->FindById(state.selected_object_id))
+        targets.push_back(state.selected_object_id);
+      else
+        targets.push_back(scene->Objects().back().id);
+    }
+    push_undo();
+    if (cmd == "MOVE")
+    {
+      double dx = 0.0, dy = 0.0, dz = 0.0;
+      iss >> dx >> dy >> dz;
+      const ON_3dVector delta(dx, dy, dz);
+      for (uint64_t tid : targets) scene->TranslateObject(tid, delta);
+      state.gumball_origin += delta;
+      set_fb("COMMAND: _MOVE (" + std::to_string(targets.size()) + " OBJECTS)");
+      return true;
+    }
+    if (cmd == "ROTATE")
+    {
+      double angle_deg = 90.0;
+      iss >> angle_deg;
+      const double rad = angle_deg * (ON_PI / 180.0);
+      for (uint64_t tid : targets)
+        scene->RotateObject(tid, rad, ON_3dVector::ZAxis, state.gumball_origin);
+      set_fb("COMMAND: _ROTATE " + std::to_string(angle_deg) + " DEG");
+      return true;
+    }
+    if (cmd == "SCALE")
+    {
+      double s = 1.0;
+      iss >> s;
+      if (std::fabs(s) <= 1e-9) s = 1.0;
+      for (uint64_t tid : targets)
+        scene->ScaleObject(tid, s, s, s, state.gumball_origin);
+      set_fb("COMMAND: _SCALE FACTOR=" + std::to_string(s));
+      return true;
+    }
   }
 
   if (cmd == "POINT" || cmd == "PT") {
@@ -1151,18 +1357,35 @@ bool TL_ProcessStudioInputEvent(const TL_StudioInputEvent& ev, const TL_GuiStudi
               const double proj = (ev.x - c2d.x) * ux + (ev.y - c2d.y) * uy;
               if (dist < 14.0 && proj > 8.0) {
                 state.dragging_gumball_axis = a;
+                if (scene)
+                {
+                  if (state.undo_stack.size() >= 32)
+                    state.undo_stack.erase(state.undo_stack.begin());
+                  state.undo_stack.push_back(*scene);
+                }
                 return true;
               }
             }
           }
+        }
+        if (ev.button == 1 && ev.mod_shift && scene)
+        {
+          state.box_selecting = true;
+          state.box_start_x = ev.x;
+          state.box_start_y = ev.y;
+          state.box_end_x = ev.x;
+          state.box_end_y = ev.y;
+          return true;
         }
         if (ev.button == 1 && ev.clicks == 1 && scene)
         {
           ON_3dPoint pivot = ON_3dPoint::Origin;
           const uint64_t hit = TL_PickSceneObjectAtScreen(*scene, layout, hovered, ev.x, ev.y, 10.0, &pivot);
           state.selected_object_id = hit;
+          state.selected_object_ids.clear();
           if (0 != hit)
           {
+            state.selected_object_ids.push_back(hit);
             state.gumball_origin = pivot;
             refresh_status();
             return true;
@@ -1181,6 +1404,19 @@ bool TL_ProcessStudioInputEvent(const TL_StudioInputEvent& ev, const TL_GuiStudi
     }
     case TL_StudioEventKind::MouseUp: {
       bool connected = false;
+      if (state.box_selecting && scene && state.active_view >= 0) {
+        ON_3dPoint pivot = state.gumball_origin;
+        state.selected_object_ids = TL_SelectSceneObjectsInRect(
+          *scene, layout, state.active_view,
+          state.box_start_x, state.box_start_y, state.box_end_x, state.box_end_y, &pivot);
+        state.selected_object_id = state.selected_object_ids.empty() ? 0 : state.selected_object_ids.front();
+        if (!state.selected_object_ids.empty())
+          state.gumball_origin = pivot;
+        state.box_selecting = false;
+        refresh_status();
+        return true;
+      }
+      state.box_selecting = false;
       if (state.wiring_from_node >= 0 && gh_doc) {
         int dst_node = -1, dst_port = -1;
         if (GhCanvasPortAt(*gh_doc, rects, ev.x, ev.y, false, &dst_node, &dst_port)) {
@@ -1204,6 +1440,11 @@ bool TL_ProcessStudioInputEvent(const TL_StudioInputEvent& ev, const TL_GuiStudi
       state.last_my = ev.y;
       bool dirty = false;
 
+      if (state.box_selecting) {
+        state.box_end_x = ev.x;
+        state.box_end_y = ev.y;
+        return true;
+      }
       if (state.wiring_from_node >= 0) {
         state.wiring_cursor_x = ev.x;
         state.wiring_cursor_y = ev.y;
@@ -1262,11 +1503,23 @@ bool TL_ProcessStudioInputEvent(const TL_StudioInputEvent& ev, const TL_GuiStudi
             const double slen2 = sx * sx + sy * sy;
             if (slen2 > 1e-6) {
               const double along = ((double)ev.dx * sx + (double)ev.dy * sy) / slen2 * R;
-              ON_3dPoint offs = ON_3dPoint::Origin;
+              ON_3dVector offs = ON_3dVector::ZeroVector;
               if (state.dragging_gumball_axis == 1) offs = ON_3dVector(0, along, 0);
               else if (state.dragging_gumball_axis == 2) offs = ON_3dVector(0, 0, along);
               else offs = ON_3dVector(along, 0, 0);
               state.gumball_origin += offs;
+              if (scene)
+              {
+                if (!state.selected_object_ids.empty())
+                {
+                  for (uint64_t sid : state.selected_object_ids)
+                    scene->TranslateObject(sid, offs);
+                }
+                else if (state.selected_object_id != 0)
+                {
+                  scene->TranslateObject(state.selected_object_id, offs);
+                }
+              }
               refresh_status();
             }
           }
@@ -1478,9 +1731,16 @@ bool TL_RunInteractiveStudioWindow(
       info.object_count = frame_scene.Objects().size();
       info.mesh_count = frame_meshes.size();
       info.layout = &layout;
+      info.scene = &frame_scene;
+      info.selected_object_id = state.selected_object_id;
       info.gumball_origin = state.gumball_origin;
       info.gumball_radius = state.gumball_radius;
       info.active_gumball_axis = state.dragging_gumball_axis;
+      info.box_selecting = state.box_selecting;
+      info.box_x0 = state.box_start_x;
+      info.box_y0 = state.box_start_y;
+      info.box_x1 = state.box_end_x;
+      info.box_y1 = state.box_end_y;
       info.active_gh_category = state.active_gh_category;
       info.gh_zoom = state.gh_zoom;
       info.gh_pan_x = state.gh_pan_x;

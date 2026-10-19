@@ -869,6 +869,8 @@ const std::vector<TL_GhComponentSpec>& TL_GhComponentCatalog::All() {
     {"Surface","SubD","SubD Cylinder","SubDCyl","Smooth Catmull-Clark SubD cylinder",{PSpec("Circle","C"),PSpec("Height","H"),PSpec("Level","L")},{PSpec("SubD","S")}},
     {"Surface","SubD","SubD Sphere","SubDSph","Smooth Catmull-Clark quad-SubD sphere",{PSpec("Center","C"),PSpec("Radius","R"),PSpec("Level","L")},{PSpec("SubD","S")}},
     {"Surface","Util","Cap Holes","Cap","Cap open planar boundary loops on mesh",{PSpec("Brep","B")},{PSpec("Brep","B"),PSpec("Valid","V")}},
+    {"Surface","Util","Fillet Edge","FilEdge","Constant-radius rolling-ball fillet on Brep edge",{PSpec("Shape","S"),PSpec("Edge","E"),PSpec("Radius","R")},{PSpec("Brep","B")}},
+    {"Surface","Util","Chamfer Edge","ChmEdge","Symmetric bevel chamfer on Brep edge",{PSpec("Shape","S"),PSpec("Edge","E"),PSpec("Distance","D")},{PSpec("Brep","B")}},
 
     // ---- 7. Mesh (8) -------------------------------------------------------
     {"Mesh","Primitive","Mesh Plane","MPlane","Grid mesh rectangle in plane",{PSpec("Boundary","B"),PSpec("Width count","W"),PSpec("Height count","H")},{PSpec("Mesh","M"),PSpec("Area","A")}},
@@ -3623,6 +3625,35 @@ void TL_GhDocument::EvaluateSingleNode(TL_GhNode& node) {
       }
       delete sd;
       return;
+    }
+    set_all({});
+    return;
+  }
+  if (nm == "Fillet Edge" || nm == "FilEdge" || nm == "Chamfer Edge" || nm == "ChmEdge") {
+    const bool is_fillet = (nm == "Fillet Edge" || nm == "FilEdge");
+    const int eidx = std::max(0, (int)std::lround(num_in(1, 0.0)));
+    const double rad = std::max(0.1, num_in(2, 1.0));
+    ON_BoundingBox bb(ON_3dPoint(-4, -4, 0), ON_3dPoint(4, 4, 8));
+    if (!in.empty() && !in[0].empty() && in[0][0].kind == TL_GhValueKind::Box && in[0][0].box_val.IsValid())
+      bb = in[0][0].box_val;
+    const ON_3dPoint c[8] = {
+      ON_3dPoint(bb.m_min.x, bb.m_min.y, bb.m_min.z), ON_3dPoint(bb.m_max.x, bb.m_min.y, bb.m_min.z),
+      ON_3dPoint(bb.m_max.x, bb.m_max.y, bb.m_min.z), ON_3dPoint(bb.m_min.x, bb.m_max.y, bb.m_min.z),
+      ON_3dPoint(bb.m_min.x, bb.m_min.y, bb.m_max.z), ON_3dPoint(bb.m_max.x, bb.m_min.y, bb.m_max.z),
+      ON_3dPoint(bb.m_max.x, bb.m_max.y, bb.m_max.z), ON_3dPoint(bb.m_min.x, bb.m_max.y, bb.m_max.z)
+    };
+    if (ON_Brep* src = ON_BrepBox(c)) {
+      ON_Brep out_b;
+      const int clamped_e = (src->m_E.Count() > 0) ? (eidx % src->m_E.Count()) : 0;
+      const bool ok = is_fillet ? TL_FilletBrepEdge(*src, clamped_e, rad, out_b)
+                                : TL_ChamferBrepEdge(*src, clamped_e, rad, out_b);
+      delete src;
+      if (ok) {
+        ON_Mesh m;
+        TL_ExtractBrepMesh(out_b, m, false);
+        set_all({TL_GhValue::MakeMesh(m)});
+        return;
+      }
     }
     set_all({});
     return;

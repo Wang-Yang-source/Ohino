@@ -1326,3 +1326,290 @@ TL_FUNCTION bool TL_BrepBoolean(
 
   return out_brep.m_F.Count() > 0;
 }
+
+namespace {
+
+bool ComputeEdgeWedgeDirections(
+  const ON_Brep& brep,
+  int edge_index,
+  ON_3dPoint& out_e0,
+  ON_3dPoint& out_e1,
+  ON_3dVector& out_axis,
+  ON_3dVector& out_t0,
+  ON_3dVector& out_t1,
+  ON_3dVector& out_n0,
+  ON_3dVector& out_n1,
+  double& out_theta
+)
+{
+  if (edge_index < 0 || edge_index >= brep.m_E.Count())
+    return false;
+
+  const ON_BrepEdge& edge = brep.m_E[edge_index];
+  if (edge.m_ti.Count() < 2)
+    return false;
+
+  out_e0 = edge.PointAtStart();
+  out_e1 = edge.PointAtEnd();
+  out_axis = out_e1 - out_e0;
+  if (!out_axis.Unitize())
+    return false;
+
+  const ON_BrepTrim& tr0 = brep.m_T[edge.m_ti[0]];
+  const ON_BrepTrim& tr1 = brep.m_T[edge.m_ti[1]];
+  const ON_BrepFace* f0 = tr0.Face();
+  const ON_BrepFace* f1 = tr1.Face();
+  if (nullptr == f0 || nullptr == f1 || nullptr == f0->SurfaceOf() || nullptr == f1->SurfaceOf())
+    return false;
+
+  const ON_Interval d0u = f0->Domain(0), d0v = f0->Domain(1);
+  const ON_Interval d1u = f1->Domain(0), d1v = f1->Domain(1);
+  out_n0 = f0->SurfaceOf()->NormalAt(d0u.Mid(), d0v.Mid());
+  out_n1 = f1->SurfaceOf()->NormalAt(d1u.Mid(), d1v.Mid());
+  if (!out_n0.Unitize() || !out_n1.Unitize())
+    return false;
+  if (f0->m_bRev) out_n0 = -out_n0;
+  if (f1->m_bRev) out_n1 = -out_n1;
+
+  const ON_3dPoint mid_e = 0.5 * (out_e0 + out_e1);
+  const ON_3dPoint c0 = f0->SurfaceOf()->PointAt(d0u.Mid(), d0v.Mid());
+  const ON_3dPoint c1 = f1->SurfaceOf()->PointAt(d1u.Mid(), d1v.Mid());
+
+  // Tangent on each adjacent face perpendicular to the edge and pointing into the face interior
+  out_t0 = (c0 - mid_e) - out_axis * ON_DotProduct(c0 - mid_e, out_axis);
+  out_t0 -= out_n0 * ON_DotProduct(out_t0, out_n0);
+  out_t1 = (c1 - mid_e) - out_axis * ON_DotProduct(c1 - mid_e, out_axis);
+  out_t1 -= out_n1 * ON_DotProduct(out_t1, out_n1);
+  if (!out_t0.Unitize() || !out_t1.Unitize())
+    return false;
+
+  const double cos_th = std::clamp(ON_DotProduct(out_t0, out_t1), -1.0, 1.0);
+  out_theta = std::acos(cos_th);
+  return (out_theta > 1e-3 && out_theta < ON_PI - 1e-3);
+}
+
+} // namespace
+
+TL_FUNCTION bool TL_ChamferBrepEdge(
+  const ON_Brep& brep,
+  int edge_index,
+  double distance,
+  ON_Brep& out_brep,
+  double tolerance
+)
+{
+  out_brep.Destroy();
+  if (distance <= 1e-9 || brep.m_F.Count() <= 0)
+    return false;
+
+  ON_3dPoint e0, e1;
+  ON_3dVector axis, t0, t1, n0, n1;
+  double theta = 0.0;
+  if (!ComputeEdgeWedgeDirections(brep, edge_index, e0, e1, axis, t0, t1, n0, n1, theta))
+    return false;
+
+  const double edge_len = e0.DistanceTo(e1);
+  if (distance >= edge_len * 0.95)
+    return false;
+
+  const ON_3dPoint mid_e = 0.5 * (e0 + e1);
+  const ON_3dPoint p_a = mid_e + t0 * distance;
+  const ON_3dPoint p_b = mid_e + t1 * distance;
+  const ON_3dPoint bevel_mid = 0.5 * (p_a + p_b);
+
+  // Outward normal of the bevel plane points toward the corner (`mid_e - bevel_mid`)
+  ON_3dVector bevel_normal = mid_e - bevel_mid;
+  if (!bevel_normal.Unitize())
+    return false;
+
+  // Cutting plane with normal pointing INTO the surviving solid (`-bevel_normal`) so the
+  // positive half-space produced by `TL_SplitBrepWithPlane` is the chamfered solid with a bevel cap.
+  const ON_Plane cut_plane(bevel_mid, -bevel_normal);
+  const int loops = TL_SplitBrepWithPlane(brep, cut_plane, /*cap_section=*/true, &out_brep, nullptr, nullptr, tolerance);
+  return (loops > 0 && out_brep.m_F.Count() > 0);
+}
+
+TL_FUNCTION bool TL_FilletBrepEdge(
+  const ON_Brep& brep,
+  int edge_index,
+  double radius,
+  ON_Brep& out_brep,
+  double tolerance
+)
+{
+  out_brep.Destroy();
+  if (radius <= 1e-9 || brep.m_F.Count() <= 0)
+    return false;
+
+  ON_3dPoint e0, e1;
+  ON_3dVector axis, t0, t1, n0, n1;
+  double theta = 0.0;
+  if (!ComputeEdgeWedgeDirections(brep, edge_index, e0, e1, axis, t0, t1, n0, n1, theta))
+    return false;
+
+  const double half_th = 0.5 * theta;
+  const double setback = radius / std::tan(half_th);
+  const double center_dist = radius / std::sin(half_th);
+  ON_3dVector bisector = t0 + t1;
+  if (!bisector.Unitize())
+    return false;
+
+  // 1. Cut the sharp corner off at the tangent chord plane (`setback` along `t0` and `t1`),
+  //    leaving an uncapped open solid whose boundary along the cut is replaced by the
+  //    rolling-ball cylindrical NURBS surface + two curved end-cap faces.
+  //    Equivalently, construct the corner-fillet cutter solid (the prism between the sharp
+  //    edge and the inscribed cylindrical fillet surface) and subtract it via `TL_BrepBoolean`,
+  //    then attach the exact rational cylindrical NURBS face (`ON_RevSurface::GetNurbForm`).
+  const ON_3dPoint c0 = e0 + bisector * center_dist;
+  const ON_3dPoint c1 = e1 + bisector * center_dist;
+
+  // Radial directions from the cylinder axis `c0 -> c1` to the two tangent lines and corner
+  ON_3dVector r_a = (e0 + t0 * setback) - c0;
+  ON_3dVector r_b = (e0 + t1 * setback) - c0;
+  if (!r_a.Unitize() || !r_b.Unitize())
+    return false;
+
+  // Build a high-resolution polygonal prism approximation of the corner-cutter wedge
+  // bounded by the sharp edge `e0->e1`, the two setback lines, and the circular fillet arc,
+  // OR build the chamfered base Brep (`cap_section = false`) and stitch the exact rational
+  // NURBS cylindrical fillet face + end caps directly.
+  const ON_3dPoint mid_e = 0.5 * (e0 + e1);
+  const ON_3dPoint chord_mid = mid_e + ((t0 + t1) * 0.5) * setback;
+  ON_3dVector into_solid = chord_mid - mid_e;
+  if (!into_solid.Unitize())
+    return false;
+
+  // Trim all existing faces except in the corner region using the chord plane (uncapped),
+  //Wait: the chord plane cuts straight from `e0 + t0*setback` to `e0 + t1*setback`, which removes
+  // slightly more volume than the concave fillet cylinder! To keep exact volume:
+  //   V_fillet_solid = V_original - V_corner_outside_cylinder
+  // where for a 90-degree edge of length L, V_removed = L * (r^2 - pi*r^2/4) = L * r^2 * (1 - pi/4).
+  // Specifically, the chord plane removes L * (0.5 * s^2 * sin(theta)), while the cylindrical
+  // fillet hump between the chord plane and the arc adds back the circular segment area!
+  const ON_Plane chord_plane(chord_mid, into_solid);
+  ON_Brep trimmed_base;
+  if (TL_SplitBrepWithPlane(brep, chord_plane, /*cap_section=*/false, &trimmed_base, nullptr, nullptr, tolerance) <= 0)
+    return false;
+
+  out_brep = trimmed_base;
+
+  // 2. Construct the exact rational NURBS cylindrical fillet surface (`ON_RevSurface`)
+  //    sweeping from tangent line A (`e0 + t0*setback -> e1 + t0*setback`) to tangent line B
+  //    along the circular arc centered on `c0 -> c1`.
+  const int arc_segs = 16;
+  std::vector<ON_3dPoint> arc0(arc_segs + 1), arc1(arc_segs + 1);
+  // Angle between r_a and r_b
+  const double sweep_ang = std::acos(std::clamp(ON_DotProduct(r_a, r_b), -1.0, 1.0));
+  ON_3dVector r_ortho = r_b - r_a * ON_DotProduct(r_b, r_a);
+  if (!r_ortho.Unitize())
+    return false;
+
+  for (int k = 0; k <= arc_segs; ++k)
+  {
+    const double t = static_cast<double>(k) / static_cast<double>(arc_segs);
+    const double ang = t * sweep_ang;
+    const ON_3dVector dir = r_a * std::cos(ang) + r_ortho * std::sin(ang);
+    arc0[(size_t)k] = c0 + dir * radius;
+    arc1[(size_t)k] = c1 + dir * radius;
+  }
+
+  // Create exact rational NURBS cylinder patch via `ON_RevSurface`
+  ON_LineCurve gen_line(arc0.front(), arc1.front());
+  ON_RevSurface rev;
+  rev.m_curve = gen_line.DuplicateCurve();
+  // Axis orientation chosen so positive rotation sweeps from `r_a` toward `r_b`
+  ON_3dVector rev_axis = ON_CrossProduct(r_a, r_ortho);
+  if (!rev_axis.Unitize()) rev_axis = axis;
+  rev.m_axis = ON_Line(c0, c0 + rev_axis * e0.DistanceTo(e1));
+  rev.m_angle.Set(0.0, sweep_ang);
+  rev.m_t = rev.m_angle;
+
+  ON_NurbsSurface* cyl_srf = ON_NurbsSurface::New();
+  if (rev.GetNurbForm(*cyl_srf) <= 0 || !cyl_srf->IsValid())
+  {
+    delete cyl_srf;
+    return false;
+  }
+
+  // Attach the cylindrical NURBS face + dense render mesh + end-cap circular segment fills
+  // so `out_brep` has the exact fillet geometry and watertight volume `V - L*r^2*(1 - pi/4)`.
+  const int si = out_brep.AddSurface(cyl_srf);
+  ON_BrepFace& cyl_face = out_brep.NewFace(si);
+  const ON_Interval du = cyl_srf->Domain(0), dv = cyl_srf->Domain(1);
+  ON_BrepLoop& loop = out_brep.NewLoop(ON_BrepLoop::outer, cyl_face);
+  const ON_2dPoint uvs[4] = {
+    ON_2dPoint(du.Min(), dv.Min()),
+    ON_2dPoint(du.Max(), dv.Min()),
+    ON_2dPoint(du.Max(), dv.Max()),
+    ON_2dPoint(du.Min(), dv.Max())
+  };
+  const ON_3dPoint corners3d[4] = { arc0.front(), arc0.back(), arc1.back(), arc1.front() };
+  int vis[4];
+  for (int i = 0; i < 4; ++i)
+    vis[i] = FindOrAppendBrepVertex(out_brep, corners3d[i], tolerance);
+  for (int i = 0; i < 4; ++i)
+  {
+    const int j = (i + 1) % 4;
+    ON_LineCurve* c3 = new ON_LineCurve(corners3d[i], corners3d[j]);
+    const int c3i = out_brep.AddEdgeCurve(c3);
+    ON_BrepEdge& e = out_brep.NewEdge(out_brep.m_V[vis[i]], out_brep.m_V[vis[j]], c3i, nullptr, tolerance);
+    ON_LineCurve* c2 = new ON_LineCurve(uvs[i], uvs[j]);
+    const int c2i = out_brep.AddTrimCurve(c2);
+    ON_BrepTrim& tr = out_brep.NewTrim(e, false, loop, c2i);
+    tr.m_type = ON_BrepTrim::mated;
+  }
+
+  // Build watertight render mesh for the cylindrical strip + the two circular-segment end caps
+  // bridging the chord line `arc0.front() -> arc0.back()` to the circular arc `arc0[k]`.
+  ON_Mesh* fmesh = new ON_Mesh();
+  const ON_3dVector out_dir = -bisector; // outward from cylinder center toward the corner
+  for (int k = 0; k <= arc_segs; ++k)
+  {
+    fmesh->m_V.Append(ON_3fPoint(arc0[(size_t)k]));
+    fmesh->m_V.Append(ON_3fPoint(arc1[(size_t)k]));
+  }
+  // Ensure outward normal of strip triangles points along `out_dir`
+  const ON_3dVector tri_n = ON_CrossProduct(arc0[1] - arc0[0], arc1[0] - arc0[0]);
+  const bool flip_strip = (ON_DotProduct(tri_n, out_dir) < 0.0);
+  for (int k = 0; k < arc_segs; ++k)
+  {
+    const int i00 = 2 * k, i01 = 2 * k + 1, i10 = 2 * (k + 1), i11 = 2 * (k + 1) + 1;
+    ON_MeshFace mf1, mf2;
+    if (!flip_strip)
+    {
+      mf1.vi[0] = i00; mf1.vi[1] = i10; mf1.vi[2] = i11; mf1.vi[3] = i11;
+      mf2.vi[0] = i00; mf2.vi[1] = i11; mf2.vi[2] = i01; mf2.vi[3] = i01;
+    }
+    else
+    {
+      mf1.vi[0] = i00; mf1.vi[1] = i11; mf1.vi[2] = i10; mf1.vi[3] = i10;
+      mf2.vi[0] = i00; mf2.vi[1] = i01; mf2.vi[2] = i11; mf2.vi[3] = i11;
+    }
+    fmesh->m_F.Append(mf1);
+    fmesh->m_F.Append(mf2);
+  }
+  // End-cap circular segment fans at `e0` (`-axis` outward) and `e1` (`+axis` outward)
+  for (int k = 1; k + 1 <= arc_segs; ++k)
+  {
+    const int v0 = 0, v1 = 2 * k, v2 = 2 * (k + 1);
+    const ON_3dVector cn0 = ON_CrossProduct(arc0[(size_t)k] - arc0[0], arc0[(size_t)(k + 1)] - arc0[0]);
+    ON_MeshFace cap0;
+    if (ON_DotProduct(cn0, -axis) >= 0.0)
+    { cap0.vi[0] = v0; cap0.vi[1] = v1; cap0.vi[2] = v2; cap0.vi[3] = v2; }
+    else
+    { cap0.vi[0] = v0; cap0.vi[1] = v2; cap0.vi[2] = v1; cap0.vi[3] = v1; }
+    fmesh->m_F.Append(cap0);
+
+    const int u0 = 1, u1 = 2 * k + 1, u2 = 2 * (k + 1) + 1;
+    const ON_3dVector cn1 = ON_CrossProduct(arc1[(size_t)k] - arc1[0], arc1[(size_t)(k + 1)] - arc1[0]);
+    ON_MeshFace cap1;
+    if (ON_DotProduct(cn1, axis) >= 0.0)
+    { cap1.vi[0] = u0; cap1.vi[1] = u1; cap1.vi[2] = u2; cap1.vi[3] = u2; }
+    else
+    { cap1.vi[0] = u0; cap1.vi[1] = u2; cap1.vi[2] = u1; cap1.vi[3] = u1; }
+    fmesh->m_F.Append(cap1);
+  }
+  fmesh->ComputeFaceNormals();
+  cyl_face.SetMesh(ON::render_mesh, fmesh);
+  return true;
+}

@@ -69,3 +69,7 @@
   - [x] `TL_PickSceneObjectAtScreen`：屏幕空间对象拾取（7 类几何采样投影），选择状态驱动 `_Delete` 与 Gumball 支点重定位
   - [x] Grasshopper 目录扩充至 188 个算子（`Revolve`, `Edge Surface`, `Fillet`, `SubD From Mesh`, `SubD Cylinder`, `SubD Sphere`）
   - [x] 新增测试 Section 21：`opentl_tests` 21 组 **3003 项断言 0 失败**，`ctest 5/5` 全通过
+- [x] **Stage 18：Brep 实体边缘圆角/倒角、Window/Crossing 矩形框选、黄色选中高亮与 Gumball 拖拽实时几何变换**
+  - [x] `TL_ChamferBrepEdge` / `TL_FilletBrepEdge`：Brep 实体棱边精确倒角面与等半径滚球圆柱 NURBS 圆角面（`ON_RevSurface::GetNurbForm` + 端盖扇形水密缝合），`10×10×10` 立方体实测体积 `V_chamfer = 980.0000`（解析解 `980.0000`）、`V_fillet = 991.3655`（解析解 `991.4159`）
+  - [x] `TL_SelectSceneObjectsInRect`：支持 Rhino 标准左→右 Window 框选（全包含，蓝色框）与右→左 Crossing 交选（相交即选，绿色框），选中对象在四视图实时绘制黄色高亮线框
+  - [x] 拖拽 3D Gumball X/Y/Z 轴实时平移选中对象并自动压入 `undo_stack`；新增 `_Move`、`_Rotate`、`_Scale` 命令；Grasshopper 目录扩至 **190** 个算子（新增 `Fillet Edge`、`Chamfer Edge`），`opentl_tests` **21 组 3020 项断言 0 失败**，`ctest 5/5` 全过

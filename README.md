@@ -108,7 +108,7 @@ Ohino
 │   ├── gh/           Grasshopper (.gh/.ghx/.ghz) archive reader + DAG solver
 │   └── gui/          Rhino 9 studio layout + 3D Gumball/OSnap + SDL3 interactive window
 ├── apps/opentl_cli   demo, inspect, four-view, Vulkan render, studio GUI render & interactive window
-├── tests/            21 sections, 3003 checks
+├── tests/            21 sections, 3020 checks
 ├── docs/             PRD_RHINO9_GH_AND_GUI.md, TODO.md
 └── assets/           logo + screenshots
 ```
@@ -194,9 +194,9 @@ TL_ApplyStudioViewports(layout, rects);        // 4 views inside the workbench
 
 | Check | Result |
 | --- | --- |
-| `opentl_tests` | **21 sections, 3003 checks, 0 failures** |
+| `opentl_tests` | **21 sections, 3020 checks, 0 failures** |
 | `ctest` | **5/5 passed** (`opentl_tests`, cli demo/views/vulkan/gui) |
-| `.gh` / `.ghz` fixtures | 8/8 Rhino 9 WIP `.gh` tutorials + GH2 `CircleRadius.ghz` parse & solve + **188/188 catalog batteries** evaluated & lossless `.gh`/`.ghx` round-trip |
+| `.gh` / `.ghz` fixtures | 8/8 Rhino 9 WIP `.gh` tutorials + GH2 `CircleRadius.ghz` parse & solve + **190/190 catalog batteries** evaluated & lossless `.gh`/`.ghx` round-trip |
 | Slider re-solve | `Segments` 15 → 30 and GH2 `Radius` 10 → 18 update downstream geometry |
 | Studio render & SDL3 GUI | 1920×1080 PNG + SDL3 interactive window, `Vulkan 1.2.357` / `Apple M4`, 4× MSAA, `D32_SFLOAT`, 72 964 line vertices, 1 319 876 triangles |
 | `.3dm` model | 383 objects, 309 Breps, 241 620 faces, four consistent viewports with 3D Gumball + `CEN` OSnap |
@@ -211,19 +211,21 @@ TL_ApplyStudioViewports(layout, rects);        // 4 views inside the workbench
 * Both mesh-based (`TL_MeshBoolean` / `TL_SliceMeshWithPlane`) and parameter-space trimmed Brep
   (`TL_BrepBoolean` / `TL_SplitBrepWithPlane`) booleans are supported; curved non-planar face trims
   are piecewise-linearly approximated in `(u, v)` space.
-* Grasshopper covers all 188 components across the 10-tab `TL_GhComponentCatalog`, programmatic and
+* Grasshopper covers all 190 components across the 10-tab `TL_GhComponentCatalog`, programmatic and
   interactive canvas authoring (`AddComponent`, `AddSlider`, `Connect`, `MoveNode`, wire dragging),
   and lossless `.gh` / `.ghx` save & reload.
 * `.ghz` (Grasshopper 2 ZIP + Pear `Document.root`) is unpacked and solved in-memory; internalised
   geometry stored as `ON_Data` blobs is decoded when the buffer is a plain `ON_Object` archive.
 * The interactive window mode shares the same layout/draw list as the headless renderer; mouse/trackpad
-  camera navigation, 3D Gumball axis dragging, screen-space object picking
-  (`TL_PickSceneObjectAtScreen` → selection drives `_Delete`, Gumball retargets to the picked pivot),
-  slider/node/wire dragging, and interactive command-line commands (`_Point`, `_Line`, `_Circle`,
-  `_Arc`, `_Box`, `_BooleanUnion`, `_Delete`, `_Undo`, `_Save3dm`, `_SaveGh`, `_GhAdd`) are wired
+  camera navigation, 3D Gumball axis dragging (live translation of selected objects with undo),
+  screen-space single-click & Window/Crossing marquee selection (`TL_PickSceneObjectAtScreen`,
+  `TL_SelectSceneObjectsInRect`), yellow selection highlighting, slider/node/wire dragging, and
+  interactive command-line commands (`_Point`, `_Line`, `_Circle`, `_Arc`, `_Box`, `_Move`, `_Rotate`,
+  `_Scale`, `_BooleanUnion`, `_Delete`, `_Undo`, `_Save3dm`, `_SaveGh`, `_GhAdd`) are wired
   through `TL_ExecuteStudioCommand`.
-* Curve fillets are computed for coplanar curve pairs that meet at a corner; 3D fillet surfaces,
-  variable-radius fillets, and face-edge (Brep) fillets are not implemented.
+* Both 2D coplanar curve fillets (`TL_FilletCurves`) and constant-radius solid Brep edge fillets /
+  chamfers (`TL_FilletBrepEdge` / `TL_ChamferBrepEdge`) are implemented; variable-radius rolling-ball
+  fillets across freeform non-planar faces are not implemented.
 * No dynamic analysis of any commercial binary: the `.3dm`/`.gh` behaviour is derived from public
   formats plus static export/import evidence kept in `re-database/`.
 
