@@ -43,11 +43,11 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   mkdir -p "${ZIG_SHIMS}"
   cat > "${ZIG_SHIMS}/linux-cxx" <<'EOF'
 #!/bin/sh
-exec zig c++ -target x86_64-linux-gnu.2.31 -Wno-date-time -Wno-nontrivial-memcall "$@"
+exec zig c++ -target x86_64-linux-gnu.2.31 -g0 -Wl,-s -Wno-date-time -Wno-nontrivial-memcall "$@"
 EOF
   cat > "${ZIG_SHIMS}/linux-cc" <<'EOF'
 #!/bin/sh
-exec zig cc -target x86_64-linux-gnu.2.31 -Wno-date-time -Wno-deprecated-non-prototype "$@"
+exec zig cc -target x86_64-linux-gnu.2.31 -g0 -Wl,-s -Wno-date-time -Wno-deprecated-non-prototype "$@"
 EOF
   cat > "${ZIG_SHIMS}/ar" <<'EOF'
 #!/bin/sh
@@ -67,8 +67,7 @@ EOF
     -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY >/dev/null
   cmake --build "${WORK}/build-linux" -j8 >/dev/null
   cmake --install "${WORK}/build-linux" --prefix "${WORK}/linux/Ohino-linux-x86_64"
-  strip -x "${WORK}/linux/Ohino-linux-x86_64/bin/opentl_cli" || true
-  strip -x "${WORK}/linux/Ohino-linux-x86_64/lib/libopentl_shared.so" || true
+  rm -f "${WORK}/linux/Ohino-linux-x86_64/lib/libopentl.a"
   tar -czf "${OUT}/Ohino-v${VERSION}-linux-x86_64.tar.gz" -C "${WORK}/linux" Ohino-linux-x86_64
   (cd "${WORK}/linux" && zip -qr "${OUT}/Ohino-v${VERSION}-linux-x86_64.zip" Ohino-linux-x86_64)
   echo "   Linux   -> .tar.gz .zip"
