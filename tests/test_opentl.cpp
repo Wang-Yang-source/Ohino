@@ -32,6 +32,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
+#include <system_error>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -2871,8 +2873,14 @@ void TestGrasshopperAndStudioGui() {
     CHECK(doc.Nodes()[(size_t)hex].outputs[0].runtime_data.size() > 0);
     CHECK(doc.Nodes()[(size_t)hex].outputs[1].runtime_data.size() > 0);
     // SaveGh & SaveGhx lossless round-trip verification
-    const std::string tmp_gh = "/tmp/ohino_roundtrip_test.gh";
-    const std::string tmp_ghx = "/tmp/ohino_roundtrip_test.ghx";
+    // Portable temp dir: "C:\tmp" does not exist on Windows, and MinGW builds
+    // of this test suite are expected to pass there too.
+    std::error_code fs_ec;
+    std::string temp_dir = std::filesystem::temp_directory_path(fs_ec).string();
+    if (fs_ec || temp_dir.empty())
+      temp_dir = ".";
+    const std::string tmp_gh = temp_dir + "/ohino_roundtrip_test.gh";
+    const std::string tmp_ghx = temp_dir + "/ohino_roundtrip_test.ghx";
     std::string serr;
     CHECK(doc.SaveFile(tmp_gh, &serr));
     CHECK(doc.SaveFile(tmp_ghx, &serr));
