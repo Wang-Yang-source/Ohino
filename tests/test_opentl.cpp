@@ -7,8 +7,8 @@
  * pass/fail tally and the process exits non zero when anything fails.
  *
  * Coverage map
- *   01 geometry value types (Point3d / Vector3d / Line / Polyline / Circle /
- *      Arc / Plane / BoundingBox / NurbsCurve)
+ *   01 geometry value types (Point3d / Vector3d / Line / ON_Polyline / Circle /
+ *      ON_Arc / Plane / BoundingBox / NurbsCurve)
  *   02 scene document: layers, stable ids, uuids, names
  *   03 queries (id / uuid / name / layer / kind) and deletion
  *   04 transformations (translate / rotate / scale) and bounding boxes
@@ -344,7 +344,7 @@ void BuildSerializationScene(TestScene& scene) {
   circle.Create(Point3d(2.0, 1.0, -1.0), 4.25);
   scene.ids.push_back(document.AddCircle(circle, "Circle_D", "Curves"));
 
-  Arc arc(Plane::World_xy, 3.5, ON_PI * 0.75);
+  ON_Arc arc(Plane::World_xy, 3.5, ON_PI * 0.75);
   arc.Translate(Vector3d(1.0, 1.0, 2.0));
   scene.ids.push_back(document.AddArc(arc, "Arc_E", "Curves"));
 
@@ -406,8 +406,8 @@ void TestGeometryTypes() {
   CHECK_POINT(line.PointAt(0.5), Point3d(1.5, 2.0, 0.0), 1e-12);
   CHECK_NEAR(line.DistanceTo(Point3d(0.0, 0.0, 7.0)), 7.0, 1e-12);
 
-  // ---- Polyline --------------------------------------------------------
-  Polyline polyline;
+  // ---- ON_Polyline --------------------------------------------------------
+  ON_Polyline polyline;
   polyline.Append(Point3d(0.0, 0.0, 0.0));
   polyline.Append(Point3d(3.0, 0.0, 0.0));
   polyline.Append(Point3d(3.0, 4.0, 0.0));
@@ -423,8 +423,8 @@ void TestGeometryTypes() {
   CHECK_NEAR(circle.Circumference(), 2.0 * ON_PI * 2.5, 1e-9);
   CHECK_POINT(circle.PointAt(0.0), Point3d(3.5, 2.0, 3.0), 1e-9);
 
-  // ---- Arc -------------------------------------------------------------
-  Arc arc(Plane::World_xy, 2.0, ON_PI * 0.5);
+  // ---- ON_Arc -------------------------------------------------------------
+  ON_Arc arc(Plane::World_xy, 2.0, ON_PI * 0.5);
   CHECK(arc.IsValid());
   CHECK_NEAR(arc.AngleRadians(), ON_PI * 0.5, 1e-12);
   CHECK_NEAR(arc.AngleDegrees(), 90.0, 1e-9);
@@ -522,7 +522,7 @@ void TestSceneDocumentBasics() {
   const uint64_t polyline_id = document.AddPolyline(
       std::vector<Point3d>{Point3d(0.0, 0.0, 0.0), Point3d(1.0, 1.0, 0.0), Point3d(2.0, 0.0, 0.0)},
       "Polyline_D", "Curves");
-  const uint64_t arc_id = document.AddArc(Arc(Plane::World_xy, 1.0, ON_PI * 0.5), "Arc_E", "Curves");
+  const uint64_t arc_id = document.AddArc(ON_Arc(Plane::World_xy, 1.0, ON_PI * 0.5), "Arc_E", "Curves");
   const uint64_t plane_id = document.AddPlane(Plane::World_xy, "Plane_F", "Reference");
   const uint64_t nurbs_id = document.AddNurbsCurveFromPoints(
       std::vector<Point3d>{Point3d(0, 0, 0), Point3d(1, 2, 0), Point3d(2, -2, 0), Point3d(3, 0, 0)}, 3,
@@ -790,7 +790,7 @@ void TestDistances() {
 
   SceneObject arc;
   arc.kind = ObjectKind::Arc;
-  arc.arc_val = Arc(Plane::World_xy, 3.0, ON_PI * 0.5);
+  arc.arc_val = ON_Arc(Plane::World_xy, 3.0, ON_PI * 0.5);
   CHECK_NEAR(arc.DistanceTo(Point3d(0.0, 0.0, 0.0)), 3.0, 1e-6);
   CHECK_NEAR(arc.DistanceTo(Point3d(3.0, 0.0, 0.0)), 0.0, 1e-6);
 
@@ -1058,7 +1058,7 @@ void TestNurbsAndSampling() {
     }
   }
 
-  // Arc length sampling: the samples must be evenly spaced along the curve.
+  // ON_Arc length sampling: the samples must be evenly spaced along the curve.
   const std::vector<CurveSamplePoint> arclength = SampleCurveByCount(wave, 9, true);
   CHECK_EQ_INT(static_cast<int>(arclength.size()), 9);
   if (arclength.size() == 9) {

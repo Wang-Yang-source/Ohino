@@ -222,7 +222,7 @@ void BuildDemoScene(DemoScene& scene) {
   scene.circle_id = scene.document.AddCircle(Circle(Point3d(0.0, 0.0, 0.0), 5.0),
                                             "Circle_R5", "Curves");
 
-  scene.arc_id = scene.document.AddArc(Arc(Plane::World_xy, 3.0, ON_PI * 0.5),
+  scene.arc_id = scene.document.AddArc(ON_Arc(Plane::World_xy, 3.0, ON_PI * 0.5),
                                       "Arc_Quarter", "Curves");
 
   scene.plane_id = scene.document.AddPlane(Plane(Point3d::Origin, Vector3d(0.0, 0.0, 1.0)),

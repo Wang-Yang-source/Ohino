@@ -7,7 +7,26 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # Link against mcneel/opennurbs in ../external/opennurbs
 set(OPENNURBS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../external/opennurbs")
+
+if(MINGW)
+  # MinGW-w64 is neither MSVC nor POSIX: force UNICODE TCHARs, supply the
+  # missing <dirent.h> bits, and pull in the Win32 headers opennurbs expects.
+  add_compile_definitions(UNICODE _UNICODE _WIN32_WINNT=0x0601)
+endif()
+
 add_subdirectory("${OPENNURBS_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/opennurbs_build" EXCLUDE_FROM_ALL)
+
+if(MINGW)
+  # Only the vendored library needs the POSIX/CRT shims; keeping the shim out of
+  # Ohino's own translation units avoids pulling Win32 GDI names (Arc, Polyline)
+  # into scope where they collide with ON_Arc / ON_Polyline.
+  set(OHINO_MINGW_SHIM "${CMAKE_CURRENT_SOURCE_DIR}/packaging/mingw_compat.h")
+  foreach(tgt opennurbsStatic zlib)
+    if(TARGET ${tgt})
+      target_compile_options(${tgt} PRIVATE -include "${OHINO_MINGW_SHIM}")
+    endif()
+  endforeach()
+endif()
 
 set(OPENTL_SOURCES
     src/tl_promote.cpp
@@ -38,7 +57,11 @@ if(OPENTL_ENABLE_SDL3)
   endif()
 endif()
 
-if(UNIX AND NOT APPLE)
+if(MINGW)
+  # Ship self-contained .exe files: no libstdc++/libgcc/libwinpthread DLLs.
+  add_link_options(-static -static-libgcc -static-libstdc++)
+  set(OPENTL_PLATFORM_LIBS shlwapi usp10 dwrite d2d1 ole32 oleaut32 uuid rpcrt4 gdi32 user32 advapi32 shell32 windowscodecs dxgi d3d11)
+elseif(UNIX AND NOT APPLE)
   set(OPENTL_PLATFORM_LIBS pthread dl)
 else()
   set(OPENTL_PLATFORM_LIBS "")
@@ -49,7 +72,13 @@ target_include_directories(opentl PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
     "${OPENNURBS_DIR}"
 )
-target_link_libraries(opentl PUBLIC opennurbsStatic ${OPENTL_PLATFORM_LIBS})
+if(MINGW)
+  # opennurbs' bundled zlib and opennurbsStatic reference each other (zcalloc),
+  # so the linker has to rescan the pair on Windows.
+  target_link_libraries(opentl PUBLIC "$<LINK_GROUP:RESCAN,opennurbsStatic,zlib>" ${OPENTL_PLATFORM_LIBS})
+else()
+  target_link_libraries(opentl PUBLIC opennurbsStatic ${OPENTL_PLATFORM_LIBS})
+endif()
 if(Vulkan_FOUND)
   target_compile_definitions(opentl PRIVATE OPENTL_HAS_VULKAN=1)
   target_include_directories(opentl PRIVATE ${Vulkan_INCLUDE_DIRS})
@@ -74,7 +103,11 @@ target_include_directories(opentl_shared PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
     "${OPENNURBS_DIR}"
 )
-target_link_libraries(opentl_shared PUBLIC opennurbsStatic ${OPENTL_PLATFORM_LIBS})
+if(MINGW)
+  target_link_libraries(opentl_shared PUBLIC "$<LINK_GROUP:RESCAN,opennurbsStatic,zlib>" ${OPENTL_PLATFORM_LIBS})
+else()
+  target_link_libraries(opentl_shared PUBLIC opennurbsStatic ${OPENTL_PLATFORM_LIBS})
+endif()
 if(Vulkan_FOUND)
   target_compile_definitions(opentl_shared PRIVATE OPENTL_HAS_VULKAN=1)
   target_include_directories(opentl_shared PRIVATE ${Vulkan_INCLUDE_DIRS})

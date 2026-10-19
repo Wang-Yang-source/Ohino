@@ -21,7 +21,7 @@
 | Platform | Architecture | Direct Download |
 | --- | --- | --- |
 | **macOS** | Apple Silicon (`arm64`) | [`Ohino-v0.2.0-macos-arm64.dmg`](https://github.com/Wang-Yang-source/Ohino/releases/download/v0.2.0/Ohino-v0.2.0-macos-arm64.dmg) · [`.pkg`](https://github.com/Wang-Yang-source/Ohino/releases/download/v0.2.0/Ohino-v0.2.0-macos-arm64.pkg) · [`.tar.gz`](https://github.com/Wang-Yang-source/Ohino/releases/download/v0.2.0/Ohino-v0.2.0-macos-arm64.tar.gz) |
-| **Windows** | 64-bit (`x86_64`) | source bundle [`Ohino-v0.2.0-windows-source.zip`](https://github.com/Wang-Yang-source/Ohino/releases/download/v0.2.0/Ohino-v0.2.0-windows-source.zip) — `cmake -S . -B build -A x64` with MSVC 2022
+| **Windows** | 64-bit (`x86_64`) | [`Ohino-v0.2.0-windows-x86_64.exe`](https://github.com/Wang-Yang-source/Ohino/releases/download/v0.2.0/Ohino-v0.2.0-windows-x86_64.exe) (NSIS installer) · [`.zip`](https://github.com/Wang-Yang-source/Ohino/releases/download/v0.2.0/Ohino-v0.2.0-windows-x86_64.zip) (portable)
 
 ---
 
