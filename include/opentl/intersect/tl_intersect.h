@@ -13,6 +13,7 @@
 
 #include "../tl_export.h"
 
+#include <string>
 #include <vector>
 
 struct TL_CurveCurveIntersectionEvent
@@ -183,4 +184,51 @@ TL_FUNCTION int TL_SurfaceSurfaceIntersect(
 /** Free all `curve_3d` pointers owned by `branches` and clear the vector. */
 TL_FUNCTION void TL_FreeSSXBranches(
   std::vector<TL_SurfaceSurfaceIntersectionBranch>& branches
+);
+
+/**
+ * Self-intersection of a single `ON_Surface` (`TL_SurfaceSelfIntersect`):
+ * Subdivides the `(u, v)` domain into a `subdiv_u x subdiv_v` patch grid and invokes
+ * `TL_SurfaceSurfaceIntersect` across all non-adjacent sub-patch pairs whose bounding boxes
+ * overlap (excluding periodic seam neighbors), remapping found branches back to the full
+ * surface domain and deduplicating symmetric `(A, B)` / `(B, A)` traces.
+ *
+ * Returns the number of self-intersection branches produced.
+ */
+TL_FUNCTION int TL_SurfaceSelfIntersect(
+  const ON_Surface& surface,
+  double tolerance,
+  std::vector<TL_SurfaceSurfaceIntersectionBranch>& branches,
+  int subdiv_u = 4,
+  int subdiv_v = 4
+);
+
+/**
+ * Export or import a list of 3D curves / `ON_Brep` surfaces to/from an ISO 10303-21 STEP
+ * (`AP203` / `AP214`, `.step` / `.stp`) or ANSI Y14.26M IGES (`.igs` / `.iges`) CAD exchange
+ * file using `B_SPLINE_CURVE_WITH_KNOTS` / `B_SPLINE_SURFACE_WITH_KNOTS` (or IGES Type 126 /
+ * Type 128 rational B-spline entities).
+ */
+TL_FUNCTION bool TL_ExportBrepSTEP(
+  const ON_Brep& brep,
+  const std::string& file_path,
+  std::string* error_out = nullptr
+);
+
+TL_FUNCTION bool TL_ImportBrepSTEP(
+  const std::string& file_path,
+  ON_Brep& out_brep,
+  std::string* error_out = nullptr
+);
+
+TL_FUNCTION bool TL_ExportCurvesIGES(
+  const ON_SimpleArray<const ON_Curve*>& curves,
+  const std::string& file_path,
+  std::string* error_out = nullptr
+);
+
+TL_FUNCTION int TL_ImportCurvesIGES(
+  const std::string& file_path,
+  ON_SimpleArray<ON_NurbsCurve*>& out_curves,
+  std::string* error_out = nullptr
 );

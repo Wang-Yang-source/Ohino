@@ -4,6 +4,10 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cmath>
+#include <fstream>
+#include <iomanip>
+#include <sstream>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -2854,4 +2858,460 @@ TL_FUNCTION int TL_SurfaceSurfaceIntersect(
   }
 
   return static_cast<int>(branches.size());
+}
+
+namespace {
+
+/**
+ * Sample a sub-domain `[u0, u1] x [v0, v1]` of `surface` into a standalone degree-3
+ * `ON_NurbsSurface` patch so `TL_SurfaceSurfaceIntersect` can intersect disjoint sub-patches
+ * of a self-intersecting surface.
+ */
+ON_NurbsSurface* BuildSubPatchSurface(
+  const ON_Surface& surface,
+  const ON_Interval& sub_u,
+  const ON_Interval& sub_v,
+  int nu = 8,
+  int nv = 8
+)
+{
+  ON_NurbsSurface* sub = ON_NurbsSurface::New(3, false, 4, 4, nu, nv);
+  if (nullptr == sub)
+    return nullptr;
+  sub->MakeClampedUniformKnotVector(0, 1.0);
+  sub->MakeClampedUniformKnotVector(1, 1.0);
+  sub->SetDomain(0, sub_u.Min(), sub_u.Max());
+  sub->SetDomain(1, sub_v.Min(), sub_v.Max());
+
+  for (int i = 0; i < nu; ++i)
+  {
+    const double u = sub_u.ParameterAt(static_cast<double>(i) / static_cast<double>(nu - 1));
+    for (int j = 0; j < nv; ++j)
+    {
+      const double v = sub_v.ParameterAt(static_cast<double>(j) / static_cast<double>(nv - 1));
+      sub->SetCV(i, j, surface.PointAt(u, v));
+    }
+  }
+  return sub;
+}
+
+} // namespace
+
+TL_FUNCTION int TL_SurfaceSelfIntersect(
+  const ON_Surface& surface,
+  double tolerance,
+  std::vector<TL_SurfaceSurfaceIntersectionBranch>& branches,
+  int subdiv_u,
+  int subdiv_v
+)
+{
+  TL_FreeSSXBranches(branches);
+  if (!surface.IsValid())
+    return 0;
+
+  const int su = std::clamp(subdiv_u, 2, 12);
+  const int sv = std::clamp(subdiv_v, 2, 12);
+  const ON_Interval dom_u = surface.Domain(0);
+  const ON_Interval dom_v = surface.Domain(1);
+  if (!dom_u.IsIncreasing() || !dom_v.IsIncreasing())
+    return 0;
+
+  const double tol = (tolerance > 0.0 && ON_IsValid(tolerance)) ? tolerance : 1e-5;
+  const bool closed_u = surface.IsClosed(0);
+  const bool closed_v = surface.IsClosed(1);
+
+  struct PatchEntry {
+    int iu = 0;
+    int iv = 0;
+    ON_NurbsSurface* patch = nullptr;
+    ON_BoundingBox bbox;
+  };
+
+  std::vector<PatchEntry> patches;
+  patches.reserve(static_cast<size_t>(su * sv));
+  for (int iu = 0; iu < su; ++iu)
+  {
+    const ON_Interval u_int(dom_u.ParameterAt(static_cast<double>(iu) / su),
+                            dom_u.ParameterAt(static_cast<double>(iu + 1) / su));
+    for (int iv = 0; iv < sv; ++iv)
+    {
+      const ON_Interval v_int(dom_v.ParameterAt(static_cast<double>(iv) / sv),
+                              dom_v.ParameterAt(static_cast<double>(iv + 1) / sv));
+      ON_NurbsSurface* p = BuildSubPatchSurface(surface, u_int, v_int);
+      if (nullptr != p)
+      {
+        ON_BoundingBox bb;
+        p->GetBoundingBox(bb);
+        patches.push_back({ iu, iv, p, bb });
+      }
+    }
+  }
+
+  auto are_adjacent = [&](const PatchEntry& a, const PatchEntry& b) -> bool {
+    int du = std::abs(a.iu - b.iu);
+    int dv = std::abs(a.iv - b.iv);
+    if (closed_u && su > 2) du = std::min(du, su - du);
+    if (closed_v && sv > 2) dv = std::min(dv, sv - dv);
+    return (du <= 1 && dv <= 1);
+  };
+
+  for (size_t i = 0; i < patches.size(); ++i)
+  {
+    for (size_t j = i + 1; j < patches.size(); ++j)
+    {
+      if (are_adjacent(patches[i], patches[j]))
+        continue;
+      if (patches[i].bbox.MinimumDistanceTo(patches[j].bbox) > tol * 2.0)
+        continue;
+
+      std::vector<TL_SurfaceSurfaceIntersectionBranch> sub_branches;
+      if (TL_SurfaceSurfaceIntersect(*patches[i].patch, *patches[j].patch, tol, sub_branches) > 0)
+      {
+        for (auto& sb : sub_branches)
+        {
+          if (sb.points_3d.Count() < 2 || nullptr == sb.curve_3d)
+          {
+            delete sb.curve_3d;
+            sb.curve_3d = nullptr;
+            continue;
+          }
+          // Polish every traced sample directly against the exact `surface` (using the two
+          // sub-patches' (ua, va) and (ub, vb) parameter hints) so sub-patch CV approximation
+          // error is eliminated!
+          std::vector<ON_3dPoint> refined_pts;
+          refined_pts.reserve(static_cast<size_t>(sb.points_3d.Count()));
+          double max_err = 0.0;
+          for (int k = 0; k < sb.points_3d.Count(); ++k)
+          {
+            SSXNode node;
+            node.ua = sb.params_a[k].x;
+            node.va = sb.params_a[k].y;
+            node.ub = sb.params_b[k].x;
+            node.vb = sb.params_b[k].y;
+            if (CorrectSSXNode(surface, surface, node, tol))
+            {
+              sb.points_3d[k] = node.point;
+              sb.params_a[k] = ON_2dPoint(node.ua, node.va);
+              sb.params_b[k] = ON_2dPoint(node.ub, node.vb);
+              max_err = std::max(max_err,
+                                 surface.PointAt(node.ua, node.va).DistanceTo(surface.PointAt(node.ub, node.vb)));
+            }
+            refined_pts.push_back(sb.points_3d[k]);
+          }
+          delete sb.curve_3d;
+          sb.curve_3d = FitTraceToNurbs(refined_pts);
+          sb.max_error = max_err;
+          if (nullptr == sb.curve_3d)
+            continue;
+          // Deduplicate against already collected branches by midpoint proximity
+          const ON_3dPoint mid = sb.curve_3d->PointAt(sb.curve_3d->Domain().Mid());
+          bool dup = false;
+          for (const auto& kept : branches)
+          {
+            if (nullptr == kept.curve_3d) continue;
+            const ON_3dPoint kmid = kept.curve_3d->PointAt(kept.curve_3d->Domain().Mid());
+            if (mid.DistanceTo(kmid) <= std::max(tol * 25.0, 1e-3))
+            {
+              dup = true;
+              break;
+            }
+          }
+          if (dup)
+          {
+            delete sb.curve_3d;
+            sb.curve_3d = nullptr;
+            continue;
+          }
+          branches.push_back(sb);
+          sb.curve_3d = nullptr;
+        }
+      }
+    }
+  }
+
+  for (auto& pe : patches)
+    delete pe.patch;
+
+  return static_cast<int>(branches.size());
+}
+
+TL_FUNCTION bool TL_ExportBrepSTEP(
+  const ON_Brep& brep,
+  const std::string& file_path,
+  std::string* error_out
+)
+{
+  if (brep.m_F.Count() <= 0)
+  {
+    if (error_out) *error_out = "Brep has no faces to export to STEP";
+    return false;
+  }
+  std::ofstream ofs(file_path, std::ios::out | std::ios::trunc);
+  if (!ofs.is_open())
+  {
+    if (error_out) *error_out = "Cannot open STEP file for writing: " + file_path;
+    return false;
+  }
+
+  ofs << "ISO-10303-21;\n"
+      << "HEADER;\n"
+      << "FILE_DESCRIPTION(('Ohino Studio STEP AP214 Export'),'2;1');\n"
+      << "FILE_NAME('" << file_path << "','2026-10-19T00:00:00',('Ohino'),('Ohino Project'),'Ohino Kernel','Ohino Studio','');\n"
+      << "FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));\n"
+      << "ENDSEC;\n"
+      << "DATA;\n"
+      << std::fixed << std::setprecision(8);
+
+  int next_id = 1;
+  for (int fi = 0; fi < brep.m_F.Count(); ++fi)
+  {
+    const ON_Surface* srf = brep.m_F[fi].SurfaceOf();
+    if (nullptr == srf) continue;
+    ON_NurbsSurface ns;
+    if (srf->GetNurbForm(ns) <= 0 || !ns.IsValid()) continue;
+
+    const int deg_u = std::max(1, ns.Order(0) - 1);
+    const int deg_v = std::max(1, ns.Order(1) - 1);
+    const int nu = ns.CVCount(0);
+    const int nv = ns.CVCount(1);
+
+    std::vector<std::vector<int>> pt_ids(static_cast<size_t>(nu), std::vector<int>(static_cast<size_t>(nv), 0));
+    for (int iu = 0; iu < nu; ++iu)
+    {
+      for (int iv = 0; iv < nv; ++iv)
+      {
+        ON_3dPoint p = ON_3dPoint::Origin;
+        ns.GetCV(iu, iv, p);
+        const int pid = next_id++;
+        pt_ids[static_cast<size_t>(iu)][static_cast<size_t>(iv)] = pid;
+        ofs << "#" << pid << "=CARTESIAN_POINT('',(" << p.x << "," << p.y << "," << p.z << "));\n";
+      }
+    }
+
+    const int srf_id = next_id++;
+    ofs << "#" << srf_id << "=B_SPLINE_SURFACE_WITH_KNOTS(''," << deg_u << "," << deg_v << ",(";
+    for (int iu = 0; iu < nu; ++iu)
+    {
+      if (iu > 0) ofs << ",";
+      ofs << "(";
+      for (int iv = 0; iv < nv; ++iv)
+      {
+        if (iv > 0) ofs << ",";
+        ofs << "#" << pt_ids[static_cast<size_t>(iu)][static_cast<size_t>(iv)];
+      }
+      ofs << ")";
+    }
+    ofs << "),.UNSPECIFIED.,.F.,.F.,.F.,(" << ( deg_u + 1 ) << "," << ( deg_u + 1 ) << "),("
+        << ( deg_v + 1 ) << "," << ( deg_v + 1 ) << "),("
+        << ns.Domain(0).Min() << "," << ns.Domain(0).Max() << "),("
+        << ns.Domain(1).Min() << "," << ns.Domain(1).Max() << "),.UNSPECIFIED.);\n";
+  }
+
+  ofs << "ENDSEC;\nEND-ISO-10303-21;\n";
+  return ofs.good();
+}
+
+TL_FUNCTION bool TL_ImportBrepSTEP(
+  const std::string& file_path,
+  ON_Brep& out_brep,
+  std::string* error_out
+)
+{
+  out_brep.Destroy();
+  std::ifstream ifs(file_path);
+  if (!ifs.is_open())
+  {
+    if (error_out) *error_out = "Cannot open STEP file for reading: " + file_path;
+    return false;
+  }
+
+  std::unordered_map<int, ON_3dPoint> cartesian_pts;
+  std::string line;
+  while (std::getline(ifs, line))
+  {
+    if (line.empty() || line[0] != '#') continue;
+    const size_t eq = line.find('=');
+    if (eq == std::string::npos) continue;
+    const int id = std::atoi(line.substr(1, eq - 1).c_str());
+
+    if (line.find("CARTESIAN_POINT") != std::string::npos)
+    {
+      const size_t lp = line.find('(', line.find("CARTESIAN_POINT") + 16);
+      const size_t rp = line.rfind(')');
+      if (lp != std::string::npos && rp != std::string::npos && rp > lp)
+      {
+        std::string coords = line.substr(lp + 1);
+        for (char& ch : coords) if (ch == ',' || ch == ')' || ch == '(') ch = ' ';
+        std::istringstream iss(coords);
+        double x = 0.0, y = 0.0, z = 0.0;
+        if (iss >> x >> y >> z)
+          cartesian_pts[id] = ON_3dPoint(x, y, z);
+      }
+    }
+    else if (line.find("B_SPLINE_SURFACE_WITH_KNOTS") != std::string::npos)
+    {
+      // Parse degree_u, degree_v and the 2D grid of `#id` control points
+      const size_t q2 = line.find("'',");
+      if (q2 == std::string::npos) continue;
+      std::string tail = line.substr(q2 + 3);
+      int deg_u = 1, deg_v = 1;
+      char c1 = 0, c2 = 0;
+      std::istringstream hdr(tail);
+      if (!(hdr >> deg_u >> c1 >> deg_v >> c2)) continue;
+
+      const size_t grid_start = tail.find("((");
+      const size_t grid_end = tail.find("))");
+      if (grid_start == std::string::npos || grid_end == std::string::npos || grid_end <= grid_start)
+        continue;
+      const std::string grid_str = tail.substr(grid_start + 1, grid_end - grid_start);
+      std::vector<std::vector<int>> rows;
+      size_t pos = 0;
+      while (pos < grid_str.size())
+      {
+        const size_t r0 = grid_str.find('(', pos);
+        const size_t r1 = grid_str.find(')', r0 == std::string::npos ? pos : r0);
+        if (r0 == std::string::npos || r1 == std::string::npos) break;
+        std::string row_s = grid_str.substr(r0 + 1, r1 - r0 - 1);
+        for (char& ch : row_s) if (ch == ',' || ch == '#') ch = ' ';
+        std::istringstream riss(row_s);
+        std::vector<int> row_ids;
+        int pid = 0;
+        while (riss >> pid) row_ids.push_back(pid);
+        if (!row_ids.empty()) rows.push_back(std::move(row_ids));
+        pos = r1 + 1;
+      }
+
+      if (rows.size() >= 2 && rows[0].size() >= 2)
+      {
+        const int nu = static_cast<int>(rows.size());
+        const int nv = static_cast<int>(rows[0].size());
+        const int order_u = std::min(nu, std::max(2, deg_u + 1));
+        const int order_v = std::min(nv, std::max(2, deg_v + 1));
+        ON_NurbsSurface* ns = ON_NurbsSurface::New(3, false, order_u, order_v, nu, nv);
+        ns->MakeClampedUniformKnotVector(0, 1.0);
+        ns->MakeClampedUniformKnotVector(1, 1.0);
+        for (int iu = 0; iu < nu; ++iu)
+        {
+          for (int iv = 0; iv < nv; ++iv)
+          {
+            const int pid = rows[static_cast<size_t>(iu)][static_cast<size_t>(iv)];
+            ns->SetCV(iu, iv, cartesian_pts[pid]);
+          }
+        }
+        ON_Brep face_brep;
+        if (ns->IsValid())
+        {
+          const int si = out_brep.AddSurface(ns);
+          ON_BrepFace& f = out_brep.NewFace(si);
+          out_brep.NewOuterLoop(f.m_face_index);
+        }
+        else
+        {
+          delete ns;
+        }
+      }
+    }
+  }
+
+  return out_brep.m_F.Count() > 0;
+}
+
+TL_FUNCTION bool TL_ExportCurvesIGES(
+  const ON_SimpleArray<const ON_Curve*>& curves,
+  const std::string& file_path,
+  std::string* error_out
+)
+{
+  std::ofstream ofs(file_path, std::ios::out | std::ios::trunc);
+  if (!ofs.is_open())
+  {
+    if (error_out) *error_out = "Cannot open IGES file for writing: " + file_path;
+    return false;
+  }
+
+  // Standard 80-column IGES records (Start `S`, Global `G`, Directory `D`, Parameter `P`, Terminate `T`)
+  ofs << "Ohino Studio ANSI Y14.26M IGES Export (Type 126 NURBS Curves)           S      1\n";
+  ofs << "1H,,1H;,7HOhino9,12H" << "ohino.iges" << ",6HOhino,6HOhino,32,38,6,308,15,,1.0,2,2HMM,1,0.01;G      1\n";
+
+  int d_seq = 1;
+  int p_seq = 1;
+  std::ostringstream d_sec, p_sec;
+  p_sec << std::fixed << std::setprecision(6);
+
+  for (int ci = 0; ci < curves.Count(); ++ci)
+  {
+    if (nullptr == curves[ci]) continue;
+    ON_NurbsCurve nc;
+    if (curves[ci]->GetNurbForm(nc) <= 0 || !nc.IsValid()) continue;
+
+    const int K = nc.CVCount() - 1;
+    const int M = std::max(1, nc.Degree());
+    d_sec << "     126" << std::setw(8) << p_seq << "       0       0       1       0       0       000000001D"
+          << std::setw(7) << d_seq++ << "\n"
+          << "     126       0       0       1       0                               0D"
+          << std::setw(7) << d_seq++ << "\n";
+
+    p_sec << "126," << K << "," << M << ",0,0,1,0";
+    for (int i = 0; i <= K; ++i)
+    {
+      ON_3dPoint pt = ON_3dPoint::Origin;
+      nc.GetCV(i, pt);
+      p_sec << "," << pt.x << "," << pt.y << "," << pt.z;
+    }
+    p_sec << "; P" << std::setw(7) << p_seq++ << "\n";
+  }
+
+  ofs << d_sec.str() << p_sec.str();
+  ofs << "S" << std::setw(7) << 1
+      << "G" << std::setw(7) << 1
+      << "D" << std::setw(7) << (d_seq - 1)
+      << "P" << std::setw(7) << (p_seq - 1)
+      << std::setw(40) << " " << "T      1\n";
+  return ofs.good();
+}
+
+TL_FUNCTION int TL_ImportCurvesIGES(
+  const std::string& file_path,
+  ON_SimpleArray<ON_NurbsCurve*>& out_curves,
+  std::string* error_out
+)
+{
+  out_curves.SetCount(0);
+  std::ifstream ifs(file_path);
+  if (!ifs.is_open())
+  {
+    if (error_out) *error_out = "Cannot open IGES file for reading: " + file_path;
+    return 0;
+  }
+
+  std::string line;
+  while (std::getline(ifs, line))
+  {
+    if (line.rfind("126,", 0) != 0) continue;
+    const size_t semi = line.find(';');
+    std::string body = (semi == std::string::npos) ? line : line.substr(0, semi);
+    for (char& ch : body) if (ch == ',') ch = ' ';
+    std::istringstream iss(body);
+    int etype = 0, K = 0, M = 1, p1 = 0, p2 = 0, p3 = 0, p4 = 0;
+    if (!(iss >> etype >> K >> M >> p1 >> p2 >> p3 >> p4)) continue;
+    const int cv_count = K + 1;
+    const int order = std::min(cv_count, std::max(2, M + 1));
+    if (cv_count < 2) continue;
+
+    ON_NurbsCurve* nc = ON_NurbsCurve::New(3, false, order, cv_count);
+    nc->MakeClampedUniformKnotVector(1.0);
+    bool ok = true;
+    for (int i = 0; i < cv_count; ++i)
+    {
+      double x = 0.0, y = 0.0, z = 0.0;
+      if (!(iss >> x >> y >> z)) { ok = false; break; }
+      nc->SetCV(i, ON_3dPoint(x, y, z));
+    }
+    if (ok && nc->IsValid())
+      out_curves.Append(nc);
+    else
+      delete nc;
+  }
+
+  return out_curves.Count();
 }

@@ -3451,8 +3451,65 @@ void TestStage17ModelingAndPicking() {
       CHECK(TL_ImportMeshSTL(stl_path, stl_loaded));
       CHECK_NEAR(std::fabs(TL_MeshSignedVolume(stl_loaded)), 980.0, 1e-3);
 
+      // ---- Stage 20: STEP (`TL_ExportBrepSTEP` / `TL_ImportBrepSTEP`) & IGES (`TL_ExportCurvesIGES` / `TL_ImportCurvesIGES`) ----
+      const std::string step_path = "/tmp/ohino_stage20_test.step";
+      CHECK(TL_ExportBrepSTEP(*box, step_path));
+      ON_Brep step_brep;
+      CHECK(TL_ImportBrepSTEP(step_path, step_brep));
+      CHECK_EQ_INT(step_brep.m_F.Count(), 6);
+
+      const std::string iges_path = "/tmp/ohino_stage20_test.iges";
+      ON_LineCurve ig_l1(ON_3dPoint(0, 0, 0), ON_3dPoint(12, 4, 2));
+      ON_LineCurve ig_l2(ON_3dPoint(12, 4, 2), ON_3dPoint(20, -3, 8));
+      ON_SimpleArray<const ON_Curve*> ig_out;
+      ig_out.Append(&ig_l1);
+      ig_out.Append(&ig_l2);
+      CHECK(TL_ExportCurvesIGES(ig_out, iges_path));
+      ON_SimpleArray<ON_NurbsCurve*> ig_in;
+      CHECK_EQ_INT(TL_ImportCurvesIGES(iges_path, ig_in), 2);
+      if (ig_in.Count() == 2) {
+        CHECK(ig_in[0]->PointAtStart().DistanceTo(ON_3dPoint(0, 0, 0)) < 1e-4);
+        CHECK(ig_in[1]->PointAtEnd().DistanceTo(ON_3dPoint(20, -3, 8)) < 1e-4);
+      }
+      for (int i = 0; i < ig_in.Count(); ++i) delete ig_in[i];
+
       delete box;
     }
+  }
+
+  // ---- Stage 20: Self-Intersecting Surface (`TL_SurfaceSelfIntersect`) ----
+  {
+    // Build a ruled figure-8 self-intersecting ribbon surface extruded along Z in [0, 6]:
+    // C(u) crosses itself at the origin `(0, 0, z)` so the surface self-intersects along the Z axis!
+    ON_NurbsSurface fig8(3, false, 4, 2, 7, 2);
+    fig8.MakeClampedUniformKnotVector(0, 1.0);
+    fig8.MakeClampedUniformKnotVector(1, 1.0);
+    fig8.SetDomain(0, 0.0, 1.0);
+    fig8.SetDomain(1, 0.0, 6.0);
+    const ON_3dPoint loop_pts[7] = {
+      ON_3dPoint(-5, -5, 0),
+      ON_3dPoint( 5,  5, 0),
+      ON_3dPoint( 8,  0, 0),
+      ON_3dPoint( 5, -5, 0),
+      ON_3dPoint(-5,  5, 0),
+      ON_3dPoint(-8,  0, 0),
+      ON_3dPoint(-5, -5, 0)
+    };
+    for (int i = 0; i < 7; ++i) {
+      fig8.SetCV(i, 0, loop_pts[i]);
+      fig8.SetCV(i, 1, loop_pts[i] + ON_3dVector(0, 0, 6.0));
+    }
+    std::vector<TL_SurfaceSurfaceIntersectionBranch> self_branches;
+    const int n_self = TL_SurfaceSelfIntersect(fig8, 1e-4, self_branches, 6, 2);
+    CHECK(n_self >= 1);
+    if (!self_branches.empty() && self_branches[0].curve_3d) {
+      const ON_3dPoint mid = self_branches[0].curve_3d->PointAt(self_branches[0].curve_3d->Domain().Mid());
+      CHECK(self_branches[0].max_error < 1e-8);
+      CHECK(std::hypot(mid.x, mid.y) < 0.40);
+      std::printf("   surface self-intersection: branches=%d max_err=%.2e mid=(%.4f,%.4f,%.4f)\n",
+                  n_self, self_branches[0].max_error, mid.x, mid.y, mid.z);
+    }
+    TL_FreeSSXBranches(self_branches);
   }
 
   EndSection();

@@ -3,7 +3,7 @@
 ; Usage: makensis -DVERSION=0.2.0 -DSTAGE_DIR=<dir> -DOUT_FILE=<file.exe> ohino.nsi
 
 !ifndef VERSION
-  !define VERSION "0.2.0"
+  !define VERSION "0.3.0"
 !endif
 !ifndef STAGE_DIR
   !define STAGE_DIR "..\..\dist\Ohino-windows-x86_64"

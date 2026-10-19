@@ -78,3 +78,8 @@
   - [x] 升级 `AppendTrimmedBrepFaceFromUvLoop`：对非平面弯曲曲面自动拟合三次（4 控制点）2D `(u, v)` NURBS 裁剪曲线与 3D 边缘曲线
   - [x] `TL_RaycastMesh`：AABB 快速剔除 + Möller–Trumbore 精确射线-三角形/四边形求交（返回最近距离 `t`、命中点、面索引与外法向）
   - [x] `TL_ExportMeshOBJ` / `TL_ImportMeshOBJ` 与 `TL_ExportMeshSTL` / `TL_ImportMeshSTL`（二进制 + ASCII 自动识别与顶点焊接），Studio 新增 `_ExportObj` / `_ExportStl` 命令，无损体积往返校验通过（`V = 980.0000`），`opentl_tests` **21 组 3034 项断言 0 失败**，`ctest 5/5` 全过
+- [x] **Stage 20：自交曲面求交、STEP / IGES 工业标准交换格式、3D Gumball 旋转弧/缩放柄全自由度交互与 v0.3.0 三平台发布**
+  - [x] `TL_SurfaceSelfIntersect`：参数域子片分割 + 非邻接子片 `TL_SurfaceSurfaceIntersect` + 原曲面 4D Gauss-Newton 精修，8 字形自交带状曲面实测交线误差 `1.07e-9`
+  - [x] `TL_ExportBrepSTEP` / `TL_ImportBrepSTEP`（ISO 10303-21 AP214 `B_SPLINE_SURFACE_WITH_KNOTS`）与 `TL_ExportCurvesIGES` / `TL_ImportCurvesIGES`（ANSI Y14.26M Type 126 NURBS 曲线），Studio 新增 `_ExportStep` / `_ExportIges` 命令
+  - [x] 3D Gumball 补齐 70% 臂长处的缩放方块手柄拖拽与 22px 旋转圆弧手柄拖拽，支持平移/旋转/缩放全自由度操纵与 `undo_stack` 撤销
+  - [x] `opentl_tests` **21 组 3044 项断言 0 失败**，`ctest 5/5` 全过，构建并发布 `v0.3.0` 三平台（macOS `.dmg`/`.pkg`/`.tar.gz`、Linux `.tar.gz`/`.zip`、Windows `.exe` NSIS 安装包/`.zip`）原生发行版

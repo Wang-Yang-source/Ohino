@@ -12,7 +12,7 @@
 # Usage: tools/package_release.sh [version]
 set -euo pipefail
 
-VERSION="${1:-0.2.0}"
+VERSION="${1:-0.3.0}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="${ROOT}/dist"
 WORK="${TMPDIR:-/tmp}/ohino-pkg"

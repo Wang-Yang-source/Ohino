@@ -191,6 +191,18 @@ void DrawViewportGumballAndHud(TL_GuiOverlay& ov, const TL_GuiStudioInfo& info) 
       const float sy = (float)(c2d.y + uy * 28.0);
       AddFill(ov, sx - 2.5f, sy - 2.5f, 5.0f, 5.0f, acols[a], kBase, 1.0f);
     }
+    // Rotation arc indicator between X and Y arms at radius 22 px
+    {
+      float prev_ax = 0.0f, prev_ay = 0.0f;
+      for (int k = 0; k <= 8; ++k)
+      {
+        const double ang = (0.5 * ON_PI) * (double)k / 8.0;
+        const float ax = (float)(c2d.x + 22.0 * std::cos(ang));
+        const float ay = (float)(c2d.y - 22.0 * std::sin(ang));
+        if (k > 0) AddLine(ov, prev_ax, prev_ay, ax, ay, kBlue, 1.8f);
+        prev_ax = ax; prev_ay = ay;
+      }
+    }
     // Center pivot + OSnap CEN badge
     AddFill(ov, (float)c2d.x - 3.5f, (float)c2d.y - 3.5f, 7.0f, 7.0f, kText, kLavender, 1.0f);
     AddFill(ov, (float)c2d.x + 8.0f, (float)c2d.y - 16.0f, 26.0f, 12.0f, kSurface0, kYellow, 1.0f);
@@ -1166,6 +1178,35 @@ bool TL_ExecuteStudioCommand(
     return ok;
   }
 
+  if (cmd == "EXPORTSTEP" || cmd == "EXPORTIGES") {
+    std::string path;
+    iss >> path;
+    if (path.empty()) path = (cmd == "EXPORTSTEP") ? "ohino_studio.step" : "ohino_studio.iges";
+    std::string err;
+    bool ok = false;
+    if (cmd == "EXPORTSTEP")
+    {
+      const ON_3dPoint c[8] = {
+        ON_3dPoint(-5, -5, 0), ON_3dPoint(5, -5, 0), ON_3dPoint(5, 5, 0), ON_3dPoint(-5, 5, 0),
+        ON_3dPoint(-5, -5, 8), ON_3dPoint(5, -5, 8), ON_3dPoint(5, 5, 8), ON_3dPoint(-5, 5, 8)
+      };
+      if (ON_Brep* b = ON_BrepBox(c)) { ok = TL_ExportBrepSTEP(*b, path, &err); delete b; }
+    }
+    else if (scene)
+    {
+      ON_SimpleArray<const ON_Curve*> crvs;
+      std::vector<ON_NurbsCurve> hold(scene->Objects().size());
+      for (size_t i = 0; i < scene->Objects().size(); ++i)
+      {
+        if (scene->Objects()[i].ToNurbsCurve(hold[i]))
+          crvs.Append(&hold[i]);
+      }
+      ok = TL_ExportCurvesIGES(crvs, path, &err);
+    }
+    set_fb(ok ? ("COMMAND: _" + cmd + " -> " + path) : ("COMMAND: _" + cmd + " FAILED: " + err));
+    return ok;
+  }
+
   if (cmd == "SAVEGH" || cmd == "SAVEGHX") {
     if (!gh_doc) return false;
     std::string path;
@@ -1384,10 +1425,13 @@ bool TL_ProcessStudioInputEvent(const TL_StudioInputEvent& ev, const TL_GuiStudi
               if (len < 6.0) continue;
               const double ux = dx / len, uy = dy / len;
               const double ex = c2d.x + ux * 42.0, ey = c2d.y + uy * 42.0;
-              const double dist = std::hypot(ev.x - ex, ev.y - ey);
+              const double sx_h = c2d.x + ux * 28.0, sy_h = c2d.y + uy * 28.0;
+              const double dist_tip = std::hypot(ev.x - ex, ev.y - ey);
+              const double dist_scale = std::hypot(ev.x - sx_h, ev.y - sy_h);
               const double proj = (ev.x - c2d.x) * ux + (ev.y - c2d.y) * uy;
-              if (dist < 14.0 && proj > 8.0) {
-                state.dragging_gumball_axis = a;
+              if ((dist_tip < 14.0 || dist_scale < 8.0) && proj > 8.0) {
+                // `0..2` = translate X/Y/Z; `3..5` = scale X/Y/Z
+                state.dragging_gumball_axis = (dist_scale < 8.0 && dist_scale < dist_tip) ? (a + 3) : a;
                 if (scene)
                 {
                   if (state.undo_stack.size() >= 32)
@@ -1396,6 +1440,19 @@ bool TL_ProcessStudioInputEvent(const TL_StudioInputEvent& ev, const TL_GuiStudi
                 }
                 return true;
               }
+            }
+            // Check 22-px rotation arc handle around c2d (`dragging_gumball_axis = 6`)
+            const double rad_c = std::hypot(ev.x - c2d.x, ev.y - c2d.y);
+            if (std::fabs(rad_c - 22.0) < 6.0 && ev.x >= c2d.x && ev.y <= c2d.y)
+            {
+              state.dragging_gumball_axis = 6;
+              if (scene)
+              {
+                if (state.undo_stack.size() >= 32)
+                  state.undo_stack.erase(state.undo_stack.begin());
+                state.undo_stack.push_back(*scene);
+              }
+              return true;
             }
           }
         }
@@ -1521,12 +1578,30 @@ bool TL_ProcessStudioInputEvent(const TL_StudioInputEvent& ev, const TL_GuiStudi
       }
       if (state.dragging_gumball_axis >= 0 && state.active_view >= 0) {
         const TL_Viewport& vp = layout.View(state.active_view);
+        if (state.dragging_gumball_axis == 6 && scene)
+        {
+          // Rotation arc drag around Z axis by horizontal/vertical delta
+          const double d_ang = (double)(ev.dx - ev.dy) * 0.015;
+          if (!state.selected_object_ids.empty())
+          {
+            for (uint64_t sid : state.selected_object_ids)
+              scene->RotateObject(sid, d_ang, ON_3dVector::ZAxis, state.gumball_origin);
+          }
+          else if (state.selected_object_id != 0)
+          {
+            scene->RotateObject(state.selected_object_id, d_ang, ON_3dVector::ZAxis, state.gumball_origin);
+          }
+          refresh_status();
+          return true;
+        }
         ON_2dPoint c2d;
         if (vp.WorldToScreen(state.gumball_origin, c2d)) {
+          const int base_axis = state.dragging_gumball_axis % 3;
+          const bool is_scale = (state.dragging_gumball_axis >= 3 && state.dragging_gumball_axis < 6);
           const double R = std::max(1.0, state.gumball_radius);
           ON_3dPoint tip = state.gumball_origin;
-          if (state.dragging_gumball_axis == 1) tip += ON_3dVector(0, R, 0);
-          else if (state.dragging_gumball_axis == 2) tip += ON_3dVector(0, 0, R);
+          if (base_axis == 1) tip += ON_3dVector(0, R, 0);
+          else if (base_axis == 2) tip += ON_3dVector(0, 0, R);
           else tip += ON_3dVector(R, 0, 0);
           ON_2dPoint t2d;
           if (vp.WorldToScreen(tip, t2d)) {
@@ -1534,21 +1609,37 @@ bool TL_ProcessStudioInputEvent(const TL_StudioInputEvent& ev, const TL_GuiStudi
             const double slen2 = sx * sx + sy * sy;
             if (slen2 > 1e-6) {
               const double along = ((double)ev.dx * sx + (double)ev.dy * sy) / slen2 * R;
-              ON_3dVector offs = ON_3dVector::ZeroVector;
-              if (state.dragging_gumball_axis == 1) offs = ON_3dVector(0, along, 0);
-              else if (state.dragging_gumball_axis == 2) offs = ON_3dVector(0, 0, along);
-              else offs = ON_3dVector(along, 0, 0);
-              state.gumball_origin += offs;
-              if (scene)
+              if (is_scale && scene)
               {
+                const double factor = std::clamp(1.0 + along / std::max(1.0, R), 0.1, 10.0);
                 if (!state.selected_object_ids.empty())
                 {
                   for (uint64_t sid : state.selected_object_ids)
-                    scene->TranslateObject(sid, offs);
+                    scene->ScaleObject(sid, factor, factor, factor, state.gumball_origin);
                 }
                 else if (state.selected_object_id != 0)
                 {
-                  scene->TranslateObject(state.selected_object_id, offs);
+                  scene->ScaleObject(state.selected_object_id, factor, factor, factor, state.gumball_origin);
+                }
+              }
+              else
+              {
+                ON_3dVector offs = ON_3dVector::ZeroVector;
+                if (base_axis == 1) offs = ON_3dVector(0, along, 0);
+                else if (base_axis == 2) offs = ON_3dVector(0, 0, along);
+                else offs = ON_3dVector(along, 0, 0);
+                state.gumball_origin += offs;
+                if (scene)
+                {
+                  if (!state.selected_object_ids.empty())
+                  {
+                    for (uint64_t sid : state.selected_object_ids)
+                      scene->TranslateObject(sid, offs);
+                  }
+                  else if (state.selected_object_id != 0)
+                  {
+                    scene->TranslateObject(state.selected_object_id, offs);
+                  }
                 }
               }
               refresh_status();
