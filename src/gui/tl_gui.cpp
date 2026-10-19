@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <sstream>
 #include <unordered_map>
 
 namespace {
@@ -663,9 +664,215 @@ int GhCanvasNodeAt(const TL_GhDocument& gh, const TL_GuiStudioRects& rects,
 
 }  // namespace
 
+bool TL_ExecuteStudioCommand(
+  const std::string& command_line,
+  opentl::mvp::SceneDocument* scene,
+  TL_GhDocument* gh_doc,
+  TL_FourViewLayout* layout,
+  const TL_GuiStudioRects* rects,
+  TL_StudioInputState& state,
+  std::string* feedback_out)
+{
+  std::istringstream iss(command_line);
+  std::string verb;
+  if (!(iss >> verb) || verb.empty())
+    return false;
+
+  if (!verb.empty() && verb[0] == '_')
+    verb.erase(0, 1);
+  std::string cmd = U(verb);
+
+  auto push_undo = [&]() {
+    if (!scene) return;
+    if (state.undo_stack.size() >= 32)
+      state.undo_stack.erase(state.undo_stack.begin());
+    state.undo_stack.push_back(*scene);
+  };
+
+  auto set_fb = [&](const std::string& msg) {
+    state.last_command_result = msg;
+    if (feedback_out) *feedback_out = msg;
+  };
+
+  if (cmd == "UNDO") {
+    if (!scene || state.undo_stack.empty()) {
+      set_fb("COMMAND: _UNDO (NOTHING TO UNDO)");
+      return false;
+    }
+    *scene = state.undo_stack.back();
+    state.undo_stack.pop_back();
+    set_fb("COMMAND: _UNDO (RESTORED SCENE, OBJECTS=" + std::to_string(scene->ObjectCount()) + ")");
+    return true;
+  }
+
+  if (cmd == "DELETE" || cmd == "SELDELETE") {
+    if (!scene || scene->Objects().empty()) {
+      set_fb("COMMAND: _DELETE (SCENE EMPTY)");
+      return false;
+    }
+    push_undo();
+    const uint64_t last_id = scene->Objects().back().id;
+    scene->DeleteObject(last_id);
+    set_fb("COMMAND: _DELETE (REMOVED OBJECT #" + std::to_string(last_id) + ")");
+    return true;
+  }
+
+  if (cmd == "POINT" || cmd == "PT") {
+    if (!scene) return false;
+    push_undo();
+    double x = state.cursor_world.x, y = state.cursor_world.y, z = state.cursor_world.z;
+    iss >> x >> y >> z;
+    const uint64_t id = scene->AddPoint(ON_3dPoint(x, y, z), "CmdPoint");
+    state.gumball_origin = ON_3dPoint(x, y, z);
+    set_fb("COMMAND: _POINT -> ID #" + std::to_string(id));
+    return true;
+  }
+
+  if (cmd == "LINE") {
+    if (!scene) return false;
+    push_undo();
+    double x0 = 0.0, y0 = 0.0, z0 = 0.0, x1 = 10.0, y1 = 10.0, z1 = 0.0;
+    iss >> x0 >> y0 >> z0 >> x1 >> y1 >> z1;
+    const uint64_t id = scene->AddLine(ON_Line(ON_3dPoint(x0, y0, z0), ON_3dPoint(x1, y1, z1)), "CmdLine");
+    state.gumball_origin = ON_3dPoint((x0 + x1) * 0.5, (y0 + y1) * 0.5, (z0 + z1) * 0.5);
+    set_fb("COMMAND: _LINE -> ID #" + std::to_string(id));
+    return true;
+  }
+
+  if (cmd == "CIRCLE") {
+    if (!scene) return false;
+    push_undo();
+    double x = state.cursor_world.x, y = state.cursor_world.y, z = state.cursor_world.z, r = 5.0;
+    if (!(iss >> r)) r = 5.0;
+    else {
+      double ny = 0.0, nz = 0.0, nr = 0.0;
+      if (iss >> ny >> nz >> nr) { x = r; y = ny; z = nz; r = nr; }
+    }
+    r = std::max(1e-3, std::fabs(r));
+    const uint64_t id = scene->AddCircle(ON_Circle(ON_Plane(ON_3dPoint(x, y, z), ON_3dVector::ZAxis), r), "CmdCircle");
+    state.gumball_origin = ON_3dPoint(x, y, z);
+    set_fb("COMMAND: _CIRCLE R=" + std::to_string(r) + " -> ID #" + std::to_string(id));
+    return true;
+  }
+
+  if (cmd == "ARC") {
+    if (!scene) return false;
+    push_undo();
+    double x = 0.0, y = 0.0, z = 0.0, r = 5.0, deg = 180.0;
+    iss >> x >> y >> z >> r >> deg;
+    r = std::max(1e-3, std::fabs(r));
+    ON_Arc arc(ON_Plane(ON_3dPoint(x, y, z), ON_3dVector::ZAxis), r, deg * (ON_PI / 180.0));
+    const uint64_t id = scene->AddArc(arc, "CmdArc");
+    set_fb("COMMAND: _ARC -> ID #" + std::to_string(id));
+    return true;
+  }
+
+  if (cmd == "BOX") {
+    if (!scene) return false;
+    push_undo();
+    double x0 = -5.0, y0 = -5.0, z0 = 0.0, x1 = 5.0, y1 = 5.0, z1 = 5.0;
+    iss >> x0 >> y0 >> z0 >> x1 >> y1 >> z1;
+    const ON_3dPoint c[8] = {
+      ON_3dPoint(x0, y0, z0), ON_3dPoint(x1, y0, z0), ON_3dPoint(x1, y1, z0), ON_3dPoint(x0, y1, z0),
+      ON_3dPoint(x0, y0, z1), ON_3dPoint(x1, y0, z1), ON_3dPoint(x1, y1, z1), ON_3dPoint(x0, y1, z1)
+    };
+    if (ON_Brep* b = ON_BrepBox(c)) {
+      std::vector<std::vector<ON_3dPoint>> edges;
+      TL_ExtractBrepEdgePolylines(*b, edges, 2);
+      for (const auto& e : edges) {
+        if (e.size() >= 2) scene->AddLine(ON_Line(e.front(), e.back()), "CmdBoxEdge");
+      }
+      delete b;
+    }
+    state.gumball_origin = ON_3dPoint((x0 + x1) * 0.5, (y0 + y1) * 0.5, (z0 + z1) * 0.5);
+    set_fb("COMMAND: _BOX (ADDED WIREFRAME EDGES)");
+    return true;
+  }
+
+  if (cmd == "BOOLEANUNION" || cmd == "BOOLEANDIFFERENCE" || cmd == "BOOLEANINTERSECTION") {
+    const TL_BooleanOp op = (cmd == "BOOLEANDIFFERENCE") ? TL_BooleanOp::Difference
+                          : (cmd == "BOOLEANINTERSECTION" ? TL_BooleanOp::Intersection : TL_BooleanOp::Union);
+    const ON_3dPoint ca[8] = {
+      ON_3dPoint(-3, -3, 0), ON_3dPoint(3, -3, 0), ON_3dPoint(3, 3, 0), ON_3dPoint(-3, 3, 0),
+      ON_3dPoint(-3, -3, 4), ON_3dPoint(3, -3, 4), ON_3dPoint(3, 3, 4), ON_3dPoint(-3, 3, 4)
+    };
+    const ON_3dPoint cb[8] = {
+      ON_3dPoint(0, -2, 1), ON_3dPoint(5, -2, 1), ON_3dPoint(5, 2, 1), ON_3dPoint(0, 2, 1),
+      ON_3dPoint(0, -2, 6), ON_3dPoint(5, -2, 6), ON_3dPoint(5, 2, 6), ON_3dPoint(0, 2, 6)
+    };
+    ON_Brep* ba = ON_BrepBox(ca);
+    ON_Brep* bb = ON_BrepBox(cb);
+    ON_Brep res;
+    bool ok = false;
+    if (ba && bb) ok = TL_BrepBoolean(*ba, *bb, op, res, 1e-6);
+    if (ok && scene) {
+      push_undo();
+      std::vector<std::vector<ON_3dPoint>> edges;
+      TL_ExtractBrepEdgePolylines(res, edges, 4);
+      for (const auto& e : edges) {
+        if (e.size() >= 2) scene->AddLine(ON_Line(e.front(), e.back()), "CmdBrepBoolEdge");
+      }
+    }
+    delete ba;
+    delete bb;
+    set_fb("COMMAND: _" + cmd + " (BREP FACES=" + std::to_string(res.m_F.Count()) + ")");
+    return ok;
+  }
+
+  if (cmd == "ZOOMEXTENTS" || cmd == "ZOOMTOFIT" || cmd == "ZE") {
+    if (!layout) return false;
+    ON_BoundingBox bb = scene ? scene->GetSceneBoundingBox() : ON_BoundingBox();
+    if (!bb.IsValid()) bb = ON_BoundingBox(ON_3dPoint(-10, -10, -5), ON_3dPoint(10, 10, 10));
+    layout->ZoomToFitAll(bb, 0.92);
+    if (rects) TL_ApplyStudioViewports(*layout, *rects, state.maximized_view);
+    set_fb("COMMAND: _ZOOMEXTENTS");
+    return true;
+  }
+
+  if (cmd == "SAVE3DM" || cmd == "SAVE") {
+    if (!scene) return false;
+    std::string path;
+    iss >> path;
+    if (path.empty()) path = "ohino_studio.3dm";
+    std::string err;
+    const bool ok = scene->Save3dm(path, &err);
+    set_fb(ok ? ("COMMAND: _SAVE3DM -> " + path) : ("COMMAND: _SAVE3DM FAILED: " + err));
+    return ok;
+  }
+
+  if (cmd == "SAVEGH" || cmd == "SAVEGHX") {
+    if (!gh_doc) return false;
+    std::string path;
+    iss >> path;
+    if (path.empty()) path = (cmd == "SAVEGHX") ? "ohino_studio.ghx" : "ohino_studio.gh";
+    std::string err;
+    const bool ok = gh_doc->SaveFile(path, &err);
+    set_fb(ok ? ("COMMAND: _" + cmd + " -> " + path) : ("COMMAND: _" + cmd + " FAILED: " + err));
+    return ok;
+  }
+
+  if (cmd == "GHADD") {
+    if (!gh_doc) return false;
+    std::string comp_name;
+    std::getline(iss, comp_name);
+    while (!comp_name.empty() && std::isspace((unsigned char)comp_name.front())) comp_name.erase(0, 1);
+    while (!comp_name.empty() && std::isspace((unsigned char)comp_name.back())) comp_name.pop_back();
+    if (comp_name.empty()) return false;
+    const int idx = gh_doc->AddComponent(comp_name, 60.0f + 160.0f * (float)(gh_doc->Nodes().size() % 5),
+                                         80.0f + 70.0f * (float)(gh_doc->Nodes().size() % 4));
+    set_fb(idx >= 0 ? ("COMMAND: _GHADD " + comp_name + " -> NODE #" + std::to_string(idx))
+                    : ("COMMAND: _GHADD UNKNOWN: " + comp_name));
+    return idx >= 0;
+  }
+
+  set_fb("UNKNOWN COMMAND: " + verb);
+  return false;
+}
+
 bool TL_ProcessStudioInputEvent(const TL_StudioInputEvent& ev, const TL_GuiStudioRects& rects,
                                 TL_FourViewLayout& layout, const ON_BoundingBox& scene_bbox,
-                                TL_GhDocument* gh_doc, TL_StudioInputState& state) {
+                                TL_GhDocument* gh_doc, TL_StudioInputState& state,
+                                opentl::mvp::SceneDocument* scene) {
   const int hovered = StudioViewportAt(layout, ev.x, ev.y);
   const bool in_viewports = InFill(rects.viewports, ev.x, ev.y);
   const bool in_gh_canvas = InFill(rects.gh_canvas, ev.x, ev.y);
@@ -683,6 +890,41 @@ bool TL_ProcessStudioInputEvent(const TL_StudioInputEvent& ev, const TL_GuiStudi
   switch (ev.kind) {
     case TL_StudioEventKind::KeyDown: {
       const int k = std::toupper(ev.key_code);
+      // Cmd/Ctrl+Z Undo shortcut
+      if ((ev.mod_cmd || ev.mod_ctrl) && k == 'Z') {
+        return TL_ExecuteStudioCommand("_Undo", scene, gh_doc, &layout, &rects, state);
+      }
+      // Cmd/Ctrl+S Save shortcut
+      if ((ev.mod_cmd || ev.mod_ctrl) && k == 'S') {
+        return TL_ExecuteStudioCommand("_Save3dm", scene, gh_doc, &layout, &rects, state);
+      }
+      // Delete / Backspace when command buffer is empty deletes last scene object
+      if ((ev.key_code == 127 || ev.key_code == 8) && state.command_buffer.empty()) {
+        return TL_ExecuteStudioCommand("_Delete", scene, gh_doc, &layout, &rects, state);
+      }
+      // Backspace edits active command buffer
+      if (ev.key_code == 8 && !state.command_buffer.empty()) {
+        state.command_buffer.pop_back();
+        state.last_command_result = "COMMAND: " + state.command_buffer + "_";
+        return true;
+      }
+      // Enter / Return executes active command buffer
+      if (ev.key_code == '\r' || ev.key_code == '\n' || ev.key_code == 13) {
+        if (!state.command_buffer.empty()) {
+          const std::string to_run = state.command_buffer;
+          state.command_buffer.clear();
+          return TL_ExecuteStudioCommand(to_run, scene, gh_doc, &layout, &rects, state);
+        }
+        return false;
+      }
+      // If user is typing a command starting with '_' or already has characters in command_buffer
+      if (!state.command_buffer.empty() || ev.key_code == '_') {
+        if (ev.key_code >= 32 && ev.key_code <= 126) {
+          state.command_buffer.push_back((char)ev.key_code);
+          state.last_command_result = "COMMAND: " + state.command_buffer + "_";
+          return true;
+        }
+      }
       if (k == 'F') {
         layout.ZoomToFitAll(scene_bbox, 0.92);
         TL_ApplyStudioViewports(layout, rects, state.maximized_view);
@@ -695,6 +937,7 @@ bool TL_ProcessStudioInputEvent(const TL_StudioInputEvent& ev, const TL_GuiStudi
         return true;
       }
       if (k == '0' || ev.key_code == 27) {
+        state.command_buffer.clear();
         state.maximized_view = -1;
         TL_ApplyStudioViewports(layout, rects, state.maximized_view);
         refresh_status();
@@ -1060,7 +1303,7 @@ bool TL_RunInteractiveStudioWindow(
   int frames = 0;
 
   auto pump = [&](const TL_StudioInputEvent& ev) {
-    if (TL_ProcessStudioInputEvent(ev, rects, layout, scene_bbox, gh_doc, state)) dirty = true;
+    if (TL_ProcessStudioInputEvent(ev, rects, layout, scene_bbox, gh_doc, state, &base_scene)) dirty = true;
   };
 
   while (running) {
@@ -1074,9 +1317,10 @@ bool TL_RunInteractiveStudioWindow(
       switch (e.type) {
         case SDL_EVENT_QUIT: running = false; break;
         case SDL_EVENT_KEY_DOWN:
-          if (e.key.key == SDLK_ESCAPE) { running = false; break; }
+          if (e.key.key == SDLK_ESCAPE && state.command_buffer.empty()) { running = false; break; }
           ev.kind = TL_StudioEventKind::KeyDown;
           ev.key_code = (int)e.key.key;
+          ev.mod_shift = shift; ev.mod_ctrl = ctrl; ev.mod_alt = alt; ev.mod_cmd = gui;
           pump(ev);
           break;
         case SDL_EVENT_MOUSE_BUTTON_DOWN:
@@ -1129,7 +1373,7 @@ bool TL_RunInteractiveStudioWindow(
         for (ON_Mesh* m : baked) frame_meshes.push_back(m);
       }
       TL_GuiStudioInfo info;
-      info.command = "COMMAND: _GRASSHOPPER _INTERACTIVE";
+      info.command = state.last_command_result.empty() ? "COMMAND: _GRASSHOPPER _INTERACTIVE" : state.last_command_result;
       info.object_count = frame_scene.Objects().size();
       info.mesh_count = frame_meshes.size();
       info.layout = &layout;

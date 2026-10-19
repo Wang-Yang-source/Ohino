@@ -1,4 +1,7 @@
 #include "opentl/booleans/tl_booleans.h"
+#include "opentl/closest_point/tl_closest_point.h"
+#include "opentl/intersect/tl_intersect.h"
+#include "opentl/meshing/tl_meshing.h"
 
 #include <algorithm>
 #include <cmath>
@@ -763,4 +766,563 @@ TL_FUNCTION bool TL_MeshBoolean(
     out_mesh.ComputeVertexNormals();
   }
   return true;
+}
+
+namespace {
+
+int FindOrAppendBrepVertex(ON_Brep& brep, const ON_3dPoint& pt, double tol)
+{
+  const double tol_sq = tol * tol;
+  for (int i = 0; i < brep.m_V.Count(); ++i)
+  {
+    if ((brep.m_V[i].point - pt).LengthSquared() <= tol_sq)
+      return i;
+  }
+  ON_BrepVertex& v = brep.NewVertex(pt, tol);
+  return v.m_vertex_index;
+}
+
+/**
+ * Append a trimmed `ON_BrepFace` to `out_brep` bounded by the closed 2D UV polygon `uv_poly`
+ * on `srf` (and optionally inner hole loops `inner_uv_loops`).
+ * Also attaches a pre-built `ON_Mesh` render cache for the exact polygon fragment so both
+ * `TL_Brep::PointIsOnFace` (UV space) and `TL_ExtractBrepMesh` (3D watertight solid) agree.
+ */
+bool AppendTrimmedBrepFaceFromUvLoop(
+  ON_Brep& out_brep,
+  const ON_Surface& srf,
+  const std::vector<ON_2dPoint>& uv_poly,
+  bool rev_face,
+  double tol,
+  const std::vector<ON_3dPoint>* exact_3d_poly = nullptr,
+  const std::vector<std::vector<ON_2dPoint>>* inner_uv_loops = nullptr
+)
+{
+  if (uv_poly.size() < 3)
+    return false;
+
+  // Verify non-degenerate 2D signed area
+  double area2 = 0.0;
+  for (size_t i = 0; i < uv_poly.size(); ++i)
+  {
+    const ON_2dPoint& a = uv_poly[i];
+    const ON_2dPoint& b = uv_poly[(i + 1) % uv_poly.size()];
+    area2 += a.x * b.y - b.x * a.y;
+  }
+  if (std::fabs(area2) <= 1e-18)
+    return false;
+
+  std::vector<ON_2dPoint> ccw_uv = uv_poly;
+  std::vector<ON_3dPoint> ccw_3d;
+  if (exact_3d_poly && exact_3d_poly->size() == uv_poly.size())
+    ccw_3d = *exact_3d_poly;
+  else
+  {
+    ccw_3d.reserve(uv_poly.size());
+    for (const ON_2dPoint& uv : uv_poly)
+      ccw_3d.push_back(srf.PointAt(uv.x, uv.y));
+  }
+
+  if (area2 < 0.0)
+  {
+    std::reverse(ccw_uv.begin(), ccw_uv.end());
+    std::reverse(ccw_3d.begin(), ccw_3d.end());
+  }
+
+  ON_Surface* dup_srf = srf.DuplicateSurface();
+  if (nullptr == dup_srf)
+    return false;
+  const int si = out_brep.AddSurface(dup_srf);
+  ON_BrepFace& face = out_brep.NewFace(si);
+  face.m_bRev = rev_face;
+
+  auto add_loop = [&](const std::vector<ON_2dPoint>& uvs,
+                      const std::vector<ON_3dPoint>& pts3d,
+                      ON_BrepLoop::TYPE loop_type) {
+    ON_BrepLoop& loop = out_brep.NewLoop(loop_type, face);
+    const size_t n = uvs.size();
+    std::vector<int> vis(n, -1);
+    for (size_t i = 0; i < n; ++i)
+      vis[i] = FindOrAppendBrepVertex(out_brep, pts3d[i], tol);
+
+    for (size_t i = 0; i < n; ++i)
+    {
+      const size_t j = (i + 1) % n;
+      ON_LineCurve* c3 = new ON_LineCurve(pts3d[i], pts3d[j]);
+      const double len3 = pts3d[i].DistanceTo(pts3d[j]);
+      c3->SetDomain(0.0, std::max(1e-6, len3));
+      const int c3i = out_brep.AddEdgeCurve(c3);
+      ON_BrepEdge& edge = out_brep.NewEdge(out_brep.m_V[vis[i]], out_brep.m_V[vis[j]], c3i, nullptr, tol);
+
+      ON_LineCurve* c2 = new ON_LineCurve(ON_2dPoint(uvs[i]), ON_2dPoint(uvs[j]));
+      const double len2 = uvs[i].DistanceTo(uvs[j]);
+      c2->SetDomain(0.0, std::max(1e-6, len2));
+      const int c2i = out_brep.AddTrimCurve(c2);
+      ON_BrepTrim& trim = out_brep.NewTrim(edge, false, loop, c2i);
+      trim.m_type = ON_BrepTrim::mated;
+      trim.m_tolerance[0] = tol;
+      trim.m_tolerance[1] = tol;
+      loop.m_pbox.Set(ON_3dPoint(uvs[i].x, uvs[i].y, 0.0), i > 0);
+    }
+    loop.m_pbox.Set(ON_3dPoint(uvs.back().x, uvs.back().y, 0.0), true);
+  };
+
+  add_loop(ccw_uv, ccw_3d, ON_BrepLoop::outer);
+
+  if (nullptr != inner_uv_loops)
+  {
+    for (const auto& hole_uv : *inner_uv_loops)
+    {
+      if (hole_uv.size() < 3) continue;
+      double h_area2 = 0.0;
+      for (size_t i = 0; i < hole_uv.size(); ++i)
+      {
+        const ON_2dPoint& a = hole_uv[i];
+        const ON_2dPoint& b = hole_uv[(i + 1) % hole_uv.size()];
+        h_area2 += a.x * b.y - b.x * a.y;
+      }
+      std::vector<ON_2dPoint> cw_uv = hole_uv;
+      // Inner hole loops in ON_Brep run clockwise in (u, v) parameter space
+      if (h_area2 > 0.0)
+        std::reverse(cw_uv.begin(), cw_uv.end());
+      std::vector<ON_3dPoint> cw_3d;
+      cw_3d.reserve(cw_uv.size());
+      for (const ON_2dPoint& uv : cw_uv)
+        cw_3d.push_back(srf.PointAt(uv.x, uv.y));
+      add_loop(cw_uv, cw_3d, ON_BrepLoop::inner);
+    }
+  }
+
+  // Attach exact cached render mesh when no inner holes exist so `TL_ExtractBrepMesh`
+  // reproduces the exact polyhedral volume without grid-approximation error.
+  if (nullptr == inner_uv_loops || inner_uv_loops->empty())
+  {
+    ON_Mesh* fmesh = new ON_Mesh();
+    for (size_t i = 0; i < ccw_3d.size(); ++i)
+    {
+      fmesh->m_V.Append(ON_3fPoint(ccw_3d[i]));
+      ON_3dVector nrm = srf.NormalAt(ccw_uv[i].x, ccw_uv[i].y);
+      if (!nrm.Unitize()) nrm = ON_3dVector::ZAxis;
+      if (rev_face) nrm = -nrm;
+      fmesh->m_N.Append(ON_3fVector(nrm));
+    }
+    for (size_t k = 1; k + 1 < ccw_3d.size(); ++k)
+    {
+      ON_MeshFace mf;
+      if (rev_face)
+      {
+        mf.vi[0] = 0; mf.vi[1] = static_cast<int>(k + 1);
+        mf.vi[2] = static_cast<int>(k); mf.vi[3] = static_cast<int>(k);
+      }
+      else
+      {
+        mf.vi[0] = 0; mf.vi[1] = static_cast<int>(k);
+        mf.vi[2] = static_cast<int>(k + 1); mf.vi[3] = static_cast<int>(k + 1);
+      }
+      fmesh->m_F.Append(mf);
+    }
+    fmesh->ComputeFaceNormals();
+    face.SetMesh(ON::render_mesh, fmesh);
+  }
+  return true;
+}
+
+/**
+ * Invert 3D point `p` onto `(u, v)` of `srf` using plane projection fast-path or
+ * bilinear/Newton closest-point solve.
+ */
+ON_2dPoint PullPointToSurfaceUv(const ON_Surface& srf, const ON_3dPoint& p)
+{
+  if (const ON_PlaneSurface* ps = ON_PlaneSurface::Cast(&srf))
+  {
+    double s = 0.0, t = 0.0;
+    if (ps->m_plane.ClosestPointTo(p, &s, &t))
+    {
+      const ON_Interval ext0 = ps->Extents(0), ext1 = ps->Extents(1);
+      const ON_Interval dom0 = ps->Domain(0), dom1 = ps->Domain(1);
+      const double u = (ext0.Length() > 1e-12) ? dom0.ParameterAt((s - ext0.Min()) / ext0.Length()) : s;
+      const double v = (ext1.Length() > 1e-12) ? dom1.ParameterAt((t - ext1.Min()) / ext1.Length()) : t;
+      return ON_2dPoint(u, v);
+    }
+  }
+  double u = 0.0, v = 0.0;
+  if (TL_GetSurfaceClosestPoint(srf, p, &u, &v))
+    return ON_2dPoint(u, v);
+
+  // Bilinear corner fallback for degree-1 / untrimmed quad patches
+  const ON_Interval du = srf.Domain(0), dv = srf.Domain(1);
+  const ON_3dPoint p00 = srf.PointAt(du.Min(), dv.Min());
+  const ON_3dPoint p10 = srf.PointAt(du.Max(), dv.Min());
+  const ON_3dPoint p01 = srf.PointAt(du.Min(), dv.Max());
+  const ON_3dVector d_u = p10 - p00;
+  const ON_3dVector d_v = p01 - p00;
+  const double lu2 = d_u.LengthSquared();
+  const double lv2 = d_v.LengthSquared();
+  const double su = (lu2 > 1e-20) ? (ON_DotProduct(p - p00, d_u) / lu2) : 0.5;
+  const double sv = (lv2 > 1e-20) ? (ON_DotProduct(p - p00, d_v) / lv2) : 0.5;
+  return ON_2dPoint(du.ParameterAt(su), dv.ParameterAt(sv));
+}
+
+/**
+ * Append a planar cap `ON_BrepFace` to `out_brep` from an ordered 3D section loop.
+ */
+void AppendPlanarCapFaceToBrep(
+  ON_Brep& out_brep,
+  const std::vector<ON_3dPoint>& loop_3d,
+  const ON_Plane& plane,
+  bool outward_along_plus_normal,
+  double tol
+)
+{
+  if (loop_3d.size() < 3)
+    return;
+
+  ON_Plane cap_plane = plane;
+  if (!outward_along_plus_normal)
+    cap_plane.Flip();
+
+  double u_min = 1e30, u_max = -1e30, v_min = 1e30, v_max = -1e30;
+  std::vector<ON_2dPoint> uvs;
+  uvs.reserve(loop_3d.size());
+  for (const ON_3dPoint& p : loop_3d)
+  {
+    double u = 0.0, v = 0.0;
+    cap_plane.ClosestPointTo(p, &u, &v);
+    uvs.push_back(ON_2dPoint(u, v));
+    u_min = std::min(u_min, u); u_max = std::max(u_max, u);
+    v_min = std::min(v_min, v); v_max = std::max(v_max, v);
+  }
+  const double pad = std::max(1.0, std::max(u_max - u_min, v_max - v_min) * 0.25);
+  ON_PlaneSurface* psrf = new ON_PlaneSurface(cap_plane);
+  psrf->SetDomain(0, u_min - pad, u_max + pad);
+  psrf->SetDomain(1, v_min - pad, v_max + pad);
+  psrf->SetExtents(0, ON_Interval(u_min - pad, u_max + pad), true);
+  psrf->SetExtents(1, ON_Interval(v_min - pad, v_max + pad), true);
+
+  AppendTrimmedBrepFaceFromUvLoop(out_brep, *psrf, uvs, false, tol, &loop_3d, nullptr);
+  delete psrf;
+}
+
+std::vector<ON_2dPoint> SampleOuterLoopUvPolygon(const ON_Brep& brep, const ON_BrepFace& face)
+{
+  std::vector<ON_2dPoint> poly;
+  const ON_BrepLoop* loop = face.OuterLoop();
+  if (nullptr == loop)
+  {
+    const ON_Interval u = face.Domain(0), v = face.Domain(1);
+    return {
+      ON_2dPoint(u.Min(), v.Min()),
+      ON_2dPoint(u.Max(), v.Min()),
+      ON_2dPoint(u.Max(), v.Max()),
+      ON_2dPoint(u.Min(), v.Max())
+    };
+  }
+  for (int lti = 0; lti < loop->m_ti.Count(); ++lti)
+  {
+    const int ti = loop->m_ti[lti];
+    if (ti < 0 || ti >= brep.m_T.Count()) continue;
+    const ON_BrepTrim& trim = brep.m_T[ti];
+    const ON_Curve* c2 = trim.TrimCurveOf();
+    if (nullptr == c2) continue;
+    const ON_Interval dom = trim.Domain();
+    const int steps = c2->IsLinear(1e-6) ? 1 : 8;
+    for (int s = 0; s < steps; ++s)
+    {
+      const double t = dom.ParameterAt(static_cast<double>(s) / static_cast<double>(steps));
+      const ON_3dPoint p = c2->PointAt(t);
+      const ON_2dPoint uv(p.x, p.y);
+      if (poly.empty() || poly.back().DistanceTo(uv) > 1e-9)
+        poly.push_back(uv);
+    }
+  }
+  if (poly.size() >= 2 && poly.front().DistanceTo(poly.back()) <= 1e-9)
+    poly.pop_back();
+  return poly;
+}
+
+} // namespace
+
+TL_FUNCTION int TL_SplitBrepWithPlane(
+  const ON_Brep& brep,
+  const ON_Plane& plane,
+  bool cap_section,
+  ON_Brep* out_positive,
+  ON_Brep* out_negative,
+  std::vector<std::vector<ON_3dPoint>>* out_section_loops,
+  double tolerance
+)
+{
+  if (nullptr != out_positive) out_positive->Destroy();
+  if (nullptr != out_negative) out_negative->Destroy();
+  if (nullptr != out_section_loops) out_section_loops->clear();
+
+  if (!plane.IsValid() || brep.m_F.Count() <= 0)
+    return 0;
+
+  const double tol = std::max(tolerance, 1e-8);
+  const ON_3dVector plane_n = plane.Normal();
+  std::vector<std::pair<ON_3dPoint, ON_3dPoint>> section_segments;
+
+  for (int fi = 0; fi < brep.m_F.Count(); ++fi)
+  {
+    const ON_BrepFace& face = brep.m_F[fi];
+    const ON_Surface* srf = face.SurfaceOf();
+    if (nullptr == srf) continue;
+
+    std::vector<ON_2dPoint> uv_ring = SampleOuterLoopUvPolygon(brep, face);
+    if (uv_ring.size() < 3) continue;
+
+    std::vector<ON_3dPoint> ring_3d;
+    ring_3d.reserve(uv_ring.size());
+    for (const ON_2dPoint& uv : uv_ring)
+      ring_3d.push_back(srf->PointAt(uv.x, uv.y));
+
+    // Clip in 3D + UV synchronously along the cutting plane
+    auto clip_side = [&](double sign, std::vector<ON_2dPoint>& out_uv, std::vector<ON_3dPoint>& out_3d) {
+      out_uv.clear();
+      out_3d.clear();
+      const size_t n = ring_3d.size();
+      std::vector<double> d(n, 0.0);
+      bool all_in = true, all_out = true;
+      for (size_t i = 0; i < n; ++i)
+      {
+        d[i] = sign * plane.DistanceTo(ring_3d[i]);
+        if (d[i] < -tol) all_in = false;
+        if (d[i] >  tol) all_out = false;
+      }
+      if (all_in) { out_uv = uv_ring; out_3d = ring_3d; return; }
+      if (all_out) return;
+
+      for (size_t i = 0; i < n; ++i)
+      {
+        const size_t j = (i + 1) % n;
+        const double di = d[i], dj = d[j];
+        if (di >= -tol)
+        {
+          out_uv.push_back(uv_ring[i]);
+          out_3d.push_back(ring_3d[i]);
+        }
+        if ((di > tol && dj < -tol) || (di < -tol && dj > tol))
+        {
+          const double t = std::fabs(di) / (std::fabs(di) + std::fabs(dj));
+          const ON_2dPoint q_uv = (1.0 - t) * uv_ring[i] + t * uv_ring[j];
+          const ON_3dPoint q_3d = (1.0 - t) * ring_3d[i] + t * ring_3d[j];
+          if (out_3d.empty() || out_3d.back().DistanceTo(q_3d) > tol * 0.1)
+          {
+            out_uv.push_back(q_uv);
+            out_3d.push_back(q_3d);
+          }
+        }
+      }
+      if (out_3d.size() >= 2 && out_3d.front().DistanceTo(out_3d.back()) <= tol * 0.1)
+      {
+        out_uv.pop_back();
+        out_3d.pop_back();
+      }
+    };
+
+    if (nullptr != out_positive)
+    {
+      std::vector<ON_2dPoint> pos_uv;
+      std::vector<ON_3dPoint> pos_3d;
+      clip_side(+1.0, pos_uv, pos_3d);
+      if (pos_uv.size() >= 3)
+        AppendTrimmedBrepFaceFromUvLoop(*out_positive, *srf, pos_uv, face.m_bRev, tol, &pos_3d);
+    }
+    if (nullptr != out_negative)
+    {
+      std::vector<ON_2dPoint> neg_uv;
+      std::vector<ON_3dPoint> neg_3d;
+      clip_side(-1.0, neg_uv, neg_3d);
+      if (neg_uv.size() >= 3)
+        AppendTrimmedBrepFaceFromUvLoop(*out_negative, *srf, neg_uv, face.m_bRev, tol, &neg_3d);
+    }
+
+    // Collect directed section segments from fan triangles of `ring_3d`
+    for (size_t k = 1; k + 1 < ring_3d.size(); ++k)
+    {
+      const ON_3dPoint& a = ring_3d[0];
+      const ON_3dPoint& b = face.m_bRev ? ring_3d[k + 1] : ring_3d[k];
+      const ON_3dPoint& c = face.m_bRev ? ring_3d[k] : ring_3d[k + 1];
+      ON_3dVector tn = ON_CrossProduct(b - a, c - a);
+      if (!tn.Unitize()) continue;
+      ON_3dPoint q0, q1;
+      if (TrianglePlaneSegment(a, b, c, plane, tol * 0.01, q0, q1))
+      {
+        const ON_3dVector dir = ON_CrossProduct(tn, plane_n);
+        if (ON_DotProduct(q1 - q0, dir) >= 0.0)
+          section_segments.push_back({ q0, q1 });
+        else
+          section_segments.push_back({ q1, q0 });
+      }
+    }
+  }
+
+  std::vector<std::vector<ON_3dPoint>> loops = ChainDirectedSegments(section_segments, tol * 10.0);
+  if (cap_section)
+  {
+    for (const auto& loop : loops)
+    {
+      if (loop.size() < 3) continue;
+      if (nullptr != out_negative)
+        AppendPlanarCapFaceToBrep(*out_negative, loop, plane, /*outward_along_plus_normal=*/true, tol);
+      if (nullptr != out_positive)
+        AppendPlanarCapFaceToBrep(*out_positive, loop, plane, /*outward_along_plus_normal=*/false, tol);
+    }
+  }
+  if (nullptr != out_section_loops)
+    *out_section_loops = loops;
+  return static_cast<int>(loops.size());
+}
+
+TL_FUNCTION bool TL_BrepBoolean(
+  const ON_Brep& brep_a,
+  const ON_Brep& brep_b,
+  TL_BooleanOp op,
+  ON_Brep& out_brep,
+  double tolerance
+)
+{
+  out_brep.Destroy();
+  if (brep_a.m_F.Count() <= 0 || brep_b.m_F.Count() <= 0)
+    return false;
+
+  const double tol = std::max(tolerance, 1e-7);
+
+  ON_Mesh mesh_a, mesh_b;
+  TL_ExtractBrepMesh(brep_a, mesh_a, false);
+  TL_ExtractBrepMesh(brep_b, mesh_b, false);
+  if (mesh_a.m_F.Count() <= 0 || mesh_b.m_F.Count() <= 0)
+    return false;
+
+  std::vector<Tri3d> tris_a, tris_b;
+  ExtractMeshTriangles(mesh_a, tris_a);
+  ExtractMeshTriangles(mesh_b, tris_b);
+
+  auto process_brep_side = [&](const ON_Brep& src_brep,
+                               const std::vector<Tri3d>& cutter_tris,
+                               const ON_Mesh& cutter_mesh,
+                               bool keep_inside,
+                               bool flip_orientation) {
+    for (int fi = 0; fi < src_brep.m_F.Count(); ++fi)
+    {
+      const ON_BrepFace& face = src_brep.m_F[fi];
+      const ON_Surface* srf = face.SurfaceOf();
+      if (nullptr == srf) continue;
+
+      ON_Mesh face_mesh;
+      if (const ON_Mesh* cached = face.Mesh(ON::any_mesh))
+        face_mesh = *cached;
+      else
+      {
+        const ON_Interval du = face.Domain(0), dv = face.Domain(1);
+        const int nu = 4, nv = 4;
+        for (int iu = 0; iu <= nu; ++iu)
+        {
+          const double u = du.ParameterAt((double)iu / (double)nu);
+          for (int iv = 0; iv <= nv; ++iv)
+          {
+            const double v = dv.ParameterAt((double)iv / (double)nv);
+            face_mesh.m_V.Append(ON_3fPoint(srf->PointAt(u, v)));
+          }
+        }
+        for (int iu = 0; iu < nu; ++iu)
+        {
+          for (int iv = 0; iv < nv; ++iv)
+          {
+            const int i00 = iu * (nv + 1) + iv;
+            const int i10 = (iu + 1) * (nv + 1) + iv;
+            const int i11 = (iu + 1) * (nv + 1) + (iv + 1);
+            const int i01 = iu * (nv + 1) + (iv + 1);
+            ON_MeshFace mf;
+            if (face.m_bRev) { mf.vi[0] = i00; mf.vi[1] = i01; mf.vi[2] = i11; mf.vi[3] = i10; }
+            else             { mf.vi[0] = i00; mf.vi[1] = i10; mf.vi[2] = i11; mf.vi[3] = i01; }
+            face_mesh.m_F.Append(mf);
+          }
+        }
+      }
+
+      std::vector<Tri3d> face_tris;
+      ExtractMeshTriangles(face_mesh, face_tris);
+      if (face_tris.empty()) continue;
+
+      std::vector<std::vector<ON_3dPoint>> fragments;
+      for (const Tri3d& ft : face_tris)
+      {
+        std::vector<size_t> candidates;
+        for (size_t j = 0; j < cutter_tris.size(); ++j)
+        {
+          if (ft.bbox.MinimumDistanceTo(cutter_tris[j].bbox) <= tol)
+            candidates.push_back(j);
+        }
+        std::vector<std::vector<ON_3dPoint>> sub = { { ft.a, ft.b, ft.c } };
+        for (size_t idx : candidates)
+        {
+          const Tri3d& cut = cutter_tris[idx];
+          std::vector<std::vector<ON_3dPoint>> next_sub;
+          next_sub.reserve(sub.size() * 2);
+          for (const auto& poly : sub)
+          {
+            if (!PolygonStraddlesAndHitsTriangle(poly, cut, tol * 0.1))
+            {
+              next_sub.push_back(poly);
+              continue;
+            }
+            std::vector<ON_3dPoint> pos = ClipPolygonByHalfSpace(poly, cut.plane, +1.0, tol * 0.1);
+            std::vector<ON_3dPoint> neg = ClipPolygonByHalfSpace(poly, cut.plane, -1.0, tol * 0.1);
+            if (pos.size() >= 3) next_sub.push_back(std::move(pos));
+            if (neg.size() >= 3) next_sub.push_back(std::move(neg));
+          }
+          sub.swap(next_sub);
+        }
+        for (auto& poly : sub) fragments.push_back(std::move(poly));
+      }
+
+      // Classify each surviving convex fragment at the triangle level, pull vertices to
+      // (u, v) on `srf`, and build a trimmed `ON_BrepFace` (`ON_BrepLoop` + `ON_BrepTrim` + `ON_BrepEdge`).
+      for (const auto& poly_3d : fragments)
+      {
+        if (poly_3d.size() < 3) continue;
+        for (size_t k = 1; k + 1 < poly_3d.size(); ++k)
+        {
+          const ON_3dPoint& p0 = poly_3d[0];
+          const ON_3dPoint& p1 = poly_3d[k];
+          const ON_3dPoint& p2 = poly_3d[k + 1];
+          if (ON_CrossProduct(p1 - p0, p2 - p0).LengthSquared() <= 1e-22)
+            continue;
+          const ON_3dPoint centroid = (p0 + p1 + p2) / 3.0;
+          const double w = std::fabs(TL_MeshWindingNumber(cutter_mesh, centroid));
+          const bool is_inside = (w >= 0.5);
+          if (is_inside != keep_inside)
+            continue;
+
+          std::vector<ON_3dPoint> tri_3d = { p0, p1, p2 };
+          std::vector<ON_2dPoint> tri_uv;
+          tri_uv.reserve(3);
+          for (const ON_3dPoint& p : tri_3d)
+            tri_uv.push_back(PullPointToSurfaceUv(*srf, p));
+          const bool rev = face.m_bRev ^ flip_orientation;
+          AppendTrimmedBrepFaceFromUvLoop(out_brep, *srf, tri_uv, rev, tol, &tri_3d);
+        }
+      }
+    }
+  };
+
+  switch (op)
+  {
+    case TL_BooleanOp::Union:
+      process_brep_side(brep_a, tris_b, mesh_b, /*keep_inside=*/false, /*flip=*/false);
+      process_brep_side(brep_b, tris_a, mesh_a, /*keep_inside=*/false, /*flip=*/false);
+      break;
+    case TL_BooleanOp::Intersection:
+      process_brep_side(brep_a, tris_b, mesh_b, /*keep_inside=*/true, /*flip=*/false);
+      process_brep_side(brep_b, tris_a, mesh_a, /*keep_inside=*/true, /*flip=*/false);
+      break;
+    case TL_BooleanOp::Difference:
+      process_brep_side(brep_a, tris_b, mesh_b, /*keep_inside=*/false, /*flip=*/false);
+      process_brep_side(brep_b, tris_a, mesh_a, /*keep_inside=*/true, /*flip=*/true);
+      break;
+  }
+
+  return out_brep.m_F.Count() > 0;
 }

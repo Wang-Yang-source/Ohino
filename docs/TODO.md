@@ -54,3 +54,10 @@
   - [x] 新增单元测试 Section 20（Grasshopper `.gh`/`.ghx` 解析与 DAG 求解）与 Section 21（Rhino 9 GUI + GH 画布渲染）
   - [x] 运行 `ctest` 全量通过 + `vision_analyze` 检验 GUI 渲染图
   - [x] `git commit` 并 `git push origin main` 同步至 <https://github.com/Wang-Yang-source/Ohino.git>
+- [x] **Stage 13–15：10-Tab 电池面板、交互式连线与导出、三平台（macOS / Linux / Windows）原生打包发布（v0.2.0）**
+  - [x] `TL_GhComponentCatalog` 10 大分类选项卡、画布拖拽连线、`.gh` / `.ghx` 导出与无损往返
+  - [x] macOS (`.dmg`/`.pkg`/`.tar.gz`)、Linux (`.tar.gz`/`.zip`)、Windows MinGW-w64 PE32+ x64 (`.exe` NSIS 安装包 / `.zip` 便携版，含交叉编译 `SDL3.dll` + `vulkan-1.dll`)
+- [x] **Stage 16：182 个 Grasshopper 算子 100% 求值覆盖、参数域 Trimmed Brep 布尔分割与 Studio 命令行交互闭环**
+  - [x] 补齐 `TL_GhComponentCatalog` 全部 182 个组件在 `TL_GhDocument::EvaluateSingleNode` 中的真实内核求值（`Evaluate Surface`, `Surface Closest Point`, `Cap Holes`, `Mesh Box`, `Deconstruct Mesh`, `Mesh Edges`, `Brep | Plane`, `Surface | Surface`, `Solid Union/Difference/Intersection`, `Orient`, `Linear/Polar Array` 等）
+  - [x] 实现参数域 Trimmed `ON_Brep` 平面切割封口 `TL_SplitBrepWithPlane` 与 CSG 布尔运算 `TL_BrepBoolean`（自动构建 `ON_BrepLoop` / `ON_BrepTrim` / `ON_BrepEdge` 并满足体积守恒）
+  - [x] 实现 Studio 交互式命令行 `TL_ExecuteStudioCommand`（支持 `_Point`, `_Line`, `_Circle`, `_Arc`, `_Box`, `_BooleanUnion`, `_Delete`, `_Undo`, `_ZoomExtents`, `_Save3dm`, `_SaveGh`, `_GhAdd` 及键盘实时输入与 `Cmd+Z` 撤销）

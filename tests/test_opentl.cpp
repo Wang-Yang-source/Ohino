@@ -3022,6 +3022,122 @@ void TestGrasshopperAndStudioGui() {
     CHECK(st.active_gh_category != 4 || st.active_gh_category >= 0);
   }
 
+  // ---- 9. Stage 16: 100% 128-battery Grasshopper solver coverage,
+  //         Trimmed ON_Brep booleans (`TL_SplitBrepWithPlane` & `TL_BrepBoolean`),
+  //         and interactive Studio Command-Line + Undo/Delete/Save workflow.
+  {
+    // (a) Instantiate and evaluate every single battery in the 182-component catalog
+    TL_GhDocument all_doc;
+    const auto& specs = TL_GhComponentCatalog::All();
+    CHECK_EQ_INT((int)specs.size(), 182);
+    int instantiated = 0;
+    for (size_t i = 0; i < specs.size(); ++i) {
+      const int nidx = all_doc.AddComponent(specs[i].name, 40.0f + (float)(i % 8) * 90.0f,
+                                            40.0f + (float)(i / 8) * 45.0f);
+      if (nidx >= 0) ++instantiated;
+    }
+    CHECK_EQ_INT(instantiated, (int)specs.size());
+    CHECK(all_doc.Evaluate());
+
+    // Specific verification of newly wired Surface / Mesh / Intersect / Transform batteries
+    TL_GhDocument sdoc;
+    const int n_box1 = sdoc.AddComponent("Center Box", 20, 20);
+    const int n_box2 = sdoc.AddComponent("Box 2Pt", 20, 90);
+    const int n_sunion = sdoc.AddComponent("Solid Union", 180, 20);
+    const int n_demesh = sdoc.AddComponent("Deconstruct Mesh", 320, 20);
+    const int n_medges = sdoc.AddComponent("Mesh Edges", 320, 90);
+    const int n_arr = sdoc.AddComponent("Linear Array", 460, 20);
+    const int n_parr = sdoc.AddComponent("Polar Array", 460, 90);
+    CHECK(n_box1 >= 0 && n_box2 >= 0 && n_sunion >= 0 && n_demesh >= 0 && n_medges >= 0);
+    CHECK(sdoc.Connect(n_box1, 0, n_sunion, 0));
+    CHECK(sdoc.Connect(n_box2, 0, n_sunion, 0));
+    CHECK(sdoc.Connect(n_sunion, 0, n_demesh, 0));
+    CHECK(sdoc.Connect(n_sunion, 0, n_medges, 0));
+    CHECK(sdoc.Connect(n_sunion, 0, n_arr, 0));
+    CHECK(sdoc.Connect(n_sunion, 0, n_parr, 0));
+    CHECK(!sdoc.Nodes()[(size_t)n_demesh].outputs[0].runtime_data.empty());
+    CHECK(!sdoc.Nodes()[(size_t)n_medges].outputs[1].runtime_data.empty());
+    CHECK_EQ_INT((int)sdoc.Nodes()[(size_t)n_arr].outputs[0].runtime_data.size(), 5);
+    CHECK_EQ_INT((int)sdoc.Nodes()[(size_t)n_parr].outputs[0].runtime_data.size(), 6);
+
+    // (b) Trimmed ON_Brep planar split (`TL_SplitBrepWithPlane`) & CSG (`TL_BrepBoolean`)
+    const ON_3dPoint corners_a[8] = {
+      ON_3dPoint(-2, -2, -2), ON_3dPoint(2, -2, -2), ON_3dPoint(2, 2, -2), ON_3dPoint(-2, 2, -2),
+      ON_3dPoint(-2, -2,  2), ON_3dPoint(2, -2,  2), ON_3dPoint(2, 2,  2), ON_3dPoint(-2, 2,  2)
+    };
+    const ON_3dPoint corners_b[8] = {
+      ON_3dPoint(0, -1, -1), ON_3dPoint(4, -1, -1), ON_3dPoint(4, 3, -1), ON_3dPoint(0, 3, -1),
+      ON_3dPoint(0, -1,  3), ON_3dPoint(4, -1,  3), ON_3dPoint(4, 3,  3), ON_3dPoint(0, 3,  3)
+    };
+    ON_Brep* brep_a = ON_BrepBox(corners_a);
+    ON_Brep* brep_b = ON_BrepBox(corners_b);
+    CHECK(nullptr != brep_a && nullptr != brep_b);
+    if (brep_a && brep_b) {
+      ON_Brep pos_brep, neg_brep;
+      std::vector<std::vector<ON_3dPoint>> loops;
+      const ON_Plane cut_pl(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+      const int nloops = TL_SplitBrepWithPlane(*brep_a, cut_pl, true, &pos_brep, &neg_brep, &loops, 1e-6);
+      CHECK_EQ_INT(nloops, 1);
+      CHECK(pos_brep.m_F.Count() >= 6);
+      CHECK(neg_brep.m_F.Count() >= 6);
+      ON_Mesh m_pos, m_neg;
+      TL_ExtractBrepMesh(pos_brep, m_pos, false);
+      TL_ExtractBrepMesh(neg_brep, m_neg, false);
+      CHECK_NEAR(TL_MeshSignedVolume(m_pos), 32.0, 1e-5);
+      CHECK_NEAR(TL_MeshSignedVolume(m_neg), 32.0, 1e-5);
+
+      ON_Brep brep_u, brep_i, brep_d;
+      CHECK(TL_BrepBoolean(*brep_a, *brep_b, TL_BooleanOp::Union, brep_u, 1e-6));
+      CHECK(TL_BrepBoolean(*brep_a, *brep_b, TL_BooleanOp::Intersection, brep_i, 1e-6));
+      CHECK(TL_BrepBoolean(*brep_a, *brep_b, TL_BooleanOp::Difference, brep_d, 1e-6));
+      CHECK(brep_u.m_F.Count() > 6);
+      CHECK(brep_i.m_F.Count() >= 6);
+      CHECK(brep_d.m_F.Count() > 6);
+
+      ON_Mesh mu, mi, md;
+      TL_ExtractBrepMesh(brep_u, mu, false);
+      TL_ExtractBrepMesh(brep_i, mi, false);
+      TL_ExtractBrepMesh(brep_d, md, false);
+      CHECK_NEAR(TL_MeshSignedVolume(mi), 18.0, 1e-5);
+      CHECK_NEAR(TL_MeshSignedVolume(mu), 110.0, 1e-5);
+      CHECK_NEAR(TL_MeshSignedVolume(md), 46.0, 1e-5);
+    }
+    delete brep_a;
+    delete brep_b;
+
+    // (c) Studio Command-Line (`_Point`, `_Line`, `_Circle`, `_Delete`, `_Undo`, `_Save3dm`, `_GhAdd`)
+    opentl::mvp::SceneDocument cmd_scene;
+    TL_GhDocument cmd_gh;
+    const TL_GuiStudioRects rects = TL_ComputeStudioRects(1920, 1080);
+    TL_FourViewLayout layout = TL_FourViewLayout::Default(1920, 1080);
+    TL_StudioInputState st;
+    std::string fb;
+    CHECK(TL_ExecuteStudioCommand("_Point 1 2 3", &cmd_scene, &cmd_gh, &layout, &rects, st, &fb));
+    CHECK_EQ_INT((int)cmd_scene.ObjectCount(), 1);
+    CHECK(TL_ExecuteStudioCommand("_Circle 0 0 0 8.5", &cmd_scene, &cmd_gh, &layout, &rects, st, &fb));
+    CHECK_EQ_INT((int)cmd_scene.ObjectCount(), 2);
+    CHECK(TL_ExecuteStudioCommand("_Delete", &cmd_scene, &cmd_gh, &layout, &rects, st, &fb));
+    CHECK_EQ_INT((int)cmd_scene.ObjectCount(), 1);
+    CHECK(TL_ExecuteStudioCommand("_Undo", &cmd_scene, &cmd_gh, &layout, &rects, st, &fb));
+    CHECK_EQ_INT((int)cmd_scene.ObjectCount(), 2);
+    CHECK(TL_ExecuteStudioCommand("_GhAdd Divide Curve", &cmd_scene, &cmd_gh, &layout, &rects, st, &fb));
+    CHECK_EQ_INT((int)cmd_gh.Nodes().size(), 1);
+
+    // Keyboard typing of `_Line 0 0 0 5 5 0` + Return key through `TL_ProcessStudioInputEvent`
+    const char* typed = "_Line 0 0 0 5 5 0";
+    for (const char* p = typed; *p; ++p) {
+      TL_StudioInputEvent kev;
+      kev.kind = TL_StudioEventKind::KeyDown;
+      kev.key_code = (int)*p;
+      CHECK(TL_ProcessStudioInputEvent(kev, rects, layout, ON_BoundingBox(), &cmd_gh, st, &cmd_scene));
+    }
+    TL_StudioInputEvent enter_ev;
+    enter_ev.kind = TL_StudioEventKind::KeyDown;
+    enter_ev.key_code = '\r';
+    CHECK(TL_ProcessStudioInputEvent(enter_ev, rects, layout, ON_BoundingBox(), &cmd_gh, st, &cmd_scene));
+    CHECK_EQ_INT((int)cmd_scene.ObjectCount(), 3);
+  }
+
   EndSection();
 }
 

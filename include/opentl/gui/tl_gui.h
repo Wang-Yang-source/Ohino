@@ -112,6 +112,9 @@ struct TL_CLASS TL_StudioInputState
   ON_3dPoint gumball_origin = ON_3dPoint::Origin;
   double gumball_radius = 12.0;
   ON_3dPoint cursor_world = ON_3dPoint::Origin;
+  std::string command_buffer;      ///< Live interactive command line input buffer
+  std::string last_command_result; ///< Most recent command execution feedback
+  std::vector<opentl::mvp::SceneDocument> undo_stack; ///< Scene undo history (up to 32 snapshots)
   std::string status_line =
     "X 0.000  Y 0.000  Z 0.000   | MILLIMETERS   | GRID SNAP   | OSNAP   | GUMBALL   | VULKAN 1.2";
 };
@@ -126,6 +129,31 @@ TL_FUNCTION void TL_ApplyStudioViewports(
   int maximized_view = -1);
 
 /**
+ * Execute a Rhino-style command line string against `scene`, `gh_doc`, `layout`, and `state`.
+ * Supported commands:
+ *   - `_Point [x y z]`
+ *   - `_Line [x0 y0 z0 x1 y1 z1]`
+ *   - `_Circle [x y z r]`
+ *   - `_Arc [x y z r angle_deg]`
+ *   - `_Box [x0 y0 z0 x1 y1 z1]`
+ *   - `_BooleanUnion`, `_BooleanDifference`, `_BooleanIntersection`
+ *   - `_Delete` (deletes most recently added object)
+ *   - `_Undo` (restores previous `SceneDocument` snapshot from `state.undo_stack`)
+ *   - `_ZoomExtents` / `_ZoomToFit`
+ *   - `_Save3dm <path.3dm>`
+ *   - `_SaveGh <path.gh|.ghx>`
+ *   - `_GhAdd <ComponentName>`
+ */
+TL_FUNCTION bool TL_ExecuteStudioCommand(
+  const std::string& command_line,
+  opentl::mvp::SceneDocument* scene,
+  TL_GhDocument* gh_doc,
+  TL_FourViewLayout* layout,
+  const TL_GuiStudioRects* rects,
+  TL_StudioInputState& state,
+  std::string* feedback_out = nullptr);
+
+/**
  * Process a single trackpad or mouse input event against the studio layout,
  * four-view cameras, 3D Gumball, and Grasshopper document. Returns true when
  * the frame needs to be re-rendered.
@@ -136,7 +164,8 @@ TL_FUNCTION bool TL_ProcessStudioInputEvent(
   TL_FourViewLayout& layout,
   const ON_BoundingBox& scene_bbox,
   TL_GhDocument* gh_doc,
-  TL_StudioInputState& state);
+  TL_StudioInputState& state,
+  opentl::mvp::SceneDocument* scene = nullptr);
 
 /**
  * Build the complete Rhino 9 style chrome draw list: menu, command bar, tool tabs,

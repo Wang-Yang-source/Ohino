@@ -106,7 +106,7 @@ Ohino
 │   ├── gh/           Grasshopper (.gh/.ghx/.ghz) archive reader + DAG solver
 │   └── gui/          Rhino 9 studio layout + 3D Gumball/OSnap + SDL3 interactive window
 ├── apps/opentl_cli   demo, inspect, four-view, Vulkan render, studio GUI render & interactive window
-├── tests/            20 sections, 2827 checks
+├── tests/            20 sections, 2946 checks
 ├── docs/             PRD_RHINO9_GH_AND_GUI.md, TODO.md
 └── assets/           logo + screenshots
 ```
@@ -192,9 +192,9 @@ TL_ApplyStudioViewports(layout, rects);        // 4 views inside the workbench
 
 | Check | Result |
 | --- | --- |
-| `opentl_tests` | **20 sections, 2827 checks, 0 failures** |
+| `opentl_tests` | **20 sections, 2946 checks, 0 failures** |
 | `ctest` | **5/5 passed** (`opentl_tests`, cli demo/views/vulkan/gui) |
-| `.gh` / `.ghz` fixtures | 8/8 Rhino 9 WIP `.gh` tutorials + GH2 `CircleRadius.ghz` parse & solve (`07` bakes 54 objects, `CircleRadius.ghz` bakes 56 objects) |
+| `.gh` / `.ghz` fixtures | 8/8 Rhino 9 WIP `.gh` tutorials + GH2 `CircleRadius.ghz` parse & solve + **182/182 catalog batteries** evaluated & lossless `.gh`/`.ghx` round-trip |
 | Slider re-solve | `Segments` 15 → 30 and GH2 `Radius` 10 → 18 update downstream geometry |
 | Studio render & SDL3 GUI | 1920×1080 PNG + SDL3 interactive window, `Vulkan 1.2.357` / `Apple M4`, 4× MSAA, `D32_SFLOAT`, 72 964 line vertices, 1 319 876 triangles |
 | `.3dm` model | 383 objects, 309 Breps, 241 620 faces, four consistent viewports with 3D Gumball + `CEN` OSnap |
@@ -206,15 +206,18 @@ TL_ApplyStudioViewports(layout, rects);        // 4 views inside the workbench
 * Surface×surface intersection handles closed, open and tangential branches with measured error
   (`≤ 5e-9` periodic fit, `1.3e-15` on a tangent line); self-intersecting cases and tolerance
   propagation are not covered.
-* Brep booleans are mesh-based (`TL_MeshBoolean`); there is no `ON_BrepSplitter`-level face
-  splitting, so results are watertight meshes rather than trimmed Breps.
-* Grasshopper coverage is the component set listed above. Definition *editing* (adding/removing
-  components, dragging wires) is not implemented — sliders and persistent data are editable.
+* Both mesh-based (`TL_MeshBoolean` / `TL_SliceMeshWithPlane`) and parameter-space trimmed Brep
+  (`TL_BrepBoolean` / `TL_SplitBrepWithPlane`) booleans are supported; curved non-planar face trims
+  are piecewise-linearly approximated in `(u, v)` space.
+* Grasshopper covers all 182 components across the 10-tab `TL_GhComponentCatalog`, programmatic and
+  interactive canvas authoring (`AddComponent`, `AddSlider`, `Connect`, `MoveNode`, wire dragging),
+  and lossless `.gh` / `.ghx` save & reload.
 * `.ghz` (Grasshopper 2 ZIP + Pear `Document.root`) is unpacked and solved in-memory; internalised
   geometry stored as `ON_Data` blobs is decoded when the buffer is a plain `ON_Object` archive.
-* The interactive window mode shares the same layout/draw list as the headless renderer; mouse
-  camera navigation and slider dragging are wired through `TL_Viewport` and the GH document, but
-  the desktop event loop is deliberately thin compared with Rhino's command system.
+* The interactive window mode shares the same layout/draw list as the headless renderer; mouse/trackpad
+  camera navigation, 3D Gumball axis dragging, slider/node/wire dragging, and interactive command-line
+  commands (`_Point`, `_Line`, `_Circle`, `_Arc`, `_Box`, `_BooleanUnion`, `_Delete`, `_Undo`,
+  `_Save3dm`, `_SaveGh`, `_GhAdd`) are wired through `TL_ExecuteStudioCommand`.
 * No dynamic analysis of any commercial binary: the `.3dm`/`.gh` behaviour is derived from public
   formats plus static export/import evidence kept in `re-database/`.
 

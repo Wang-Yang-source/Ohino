@@ -96,3 +96,41 @@ TL_FUNCTION bool TL_MeshBoolean(
   ON_Mesh& out_mesh,
   double tolerance = 1e-7
 );
+
+/**
+ * Split a closed or open `ON_Brep` with `plane`, trimming its underlying surfaces in 2D
+ * `(u, v)` parameter space (`ON_BrepLoop` / `ON_BrepTrim` / `ON_BrepEdge`) and optionally
+ * adding a planar cap face along the section loop so both resulting `ON_Brep` solids stay
+ * closed and watertight.
+ *
+ * Returns the number of planar section loops extracted.
+ */
+TL_FUNCTION int TL_SplitBrepWithPlane(
+  const ON_Brep& brep,
+  const ON_Plane& plane,
+  bool cap_section,
+  ON_Brep* out_positive,
+  ON_Brep* out_negative,
+  std::vector<std::vector<ON_3dPoint>>* out_section_loops = nullptr,
+  double tolerance = 1e-6
+);
+
+/**
+ * Exact parameter-space trimmed `ON_Brep` boolean (`Union`, `Intersection`, `Difference`)
+ * between two closed `ON_Brep` solids:
+ *   1. Pairwise `TL_SurfaceSurfaceIntersect` across overlapping face pairs;
+ *   2. Parameter-space `(u, v)` face clipping & `ON_BrepLoop` / `ON_BrepTrim` / `ON_BrepEdge`
+ *      reconstruction on every surviving face fragment;
+ *   3. Generalized winding number classification (`TL_MeshContainsPoint`) of each trimmed
+ *      Brep face fragment against the opposite solid, with `ON_BrepFace::m_bRev` flipped
+ *      on interior cutter faces for `Difference`.
+ *
+ * Returns true when `out_brep` is valid and non-empty.
+ */
+TL_FUNCTION bool TL_BrepBoolean(
+  const ON_Brep& brep_a,
+  const ON_Brep& brep_b,
+  TL_BooleanOp op,
+  ON_Brep& out_brep,
+  double tolerance = 1e-6
+);
