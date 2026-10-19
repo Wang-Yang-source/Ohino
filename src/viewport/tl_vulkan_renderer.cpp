@@ -71,8 +71,6 @@ const float kMeshColor[4] = { TL_CatppuccinMochaTheme::kMauve[0], TL_CatppuccinM
 // line.vert -- unlit, pixel-space XY + depth.
 // ============================================================================
 
-#if defined(OPENTL_HAS_VULKAN)
-
 const uint32_t kMeshVertSpv[] = {
   0x07230203u, 0x00010000u, 0x000d000bu, 0x00000067u, 0x00000000u, 0x00020011u, 0x00000001u,
   0x0006000bu, 0x00000001u, 0x4c534c47u, 0x6474732eu, 0x3035342eu, 0x00000000u, 0x0003000eu,
@@ -773,7 +771,7 @@ void AppendMeshTriangles(const ON_Mesh& mesh, const TL_Viewport& vp, const Viewp
 }
 
 // ---- Vulkan helpers --------------------------------------------------------
-
+#if defined(OPENTL_HAS_VULKAN)
 uint32_t FindMemoryType(VkPhysicalDevice physical, uint32_t type_bits,
                         VkMemoryPropertyFlags properties)
 {

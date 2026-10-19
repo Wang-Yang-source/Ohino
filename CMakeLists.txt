@@ -28,11 +28,14 @@ set(OPENTL_SOURCES
 )
 
 # Optional Vulkan backend for the four-view renderer (MoltenVK on macOS, native on Win/Linux).
+option(OPENTL_ENABLE_SDL3 "Enable SDL3 interactive studio window" ON)
 find_package(Vulkan QUIET)
-find_package(SDL3 QUIET)
-if(NOT SDL3_FOUND)
-  find_path(SDL3_INCLUDE_DIR SDL3/SDL.h HINTS /opt/homebrew/include /usr/local/include)
-  find_library(SDL3_LIBRARY NAMES SDL3 HINTS /opt/homebrew/lib /usr/local/lib)
+if(OPENTL_ENABLE_SDL3)
+  find_package(SDL3 QUIET)
+  if(NOT SDL3_FOUND)
+    find_path(SDL3_INCLUDE_DIR SDL3/SDL.h HINTS /opt/homebrew/include /usr/local/include)
+    find_library(SDL3_LIBRARY NAMES SDL3 HINTS /opt/homebrew/lib /usr/local/lib)
+  endif()
 endif()
 
 if(UNIX AND NOT APPLE)
