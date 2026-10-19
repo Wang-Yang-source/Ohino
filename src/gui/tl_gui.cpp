@@ -95,6 +95,11 @@ std::string Truncate(const std::string& s, float max_px, float pixel) {
   return s.substr(0, max_chars - 2) + "..";
 }
 
+float TextWidthOf(const std::string& s, float pixel) { return (float)s.size() * 6.0f * pixel; }
+std::string TruncateStr(const std::string& s, float max_px, float pixel) {
+  return Truncate(s, max_px, pixel);
+}
+
 const float* AccentForNode(const TL_GhNode& n) {
   if (n.is_slider) return kPeach;
   if (n.is_panel) return kYellow;
@@ -220,12 +225,20 @@ TL_GuiStudioRects TL_ComputeStudioRects(int width, int height) {
   return r;
 }
 
-void TL_ApplyStudioViewports(TL_FourViewLayout& layout, const TL_GuiStudioRects& rects) {
+void TL_ApplyStudioViewports(TL_FourViewLayout& layout, const TL_GuiStudioRects& rects,
+                             int maximized_view) {
   layout.SetCanvasSize(rects.width, rects.height);
   const int vx = (int)rects.viewports.x;
   const int vy = (int)rects.viewports.y;
   const int vw = (int)rects.viewports.w;
   const int vh = (int)rects.viewports.h;
+  if (maximized_view >= 0 && maximized_view < 4) {
+    for (int i = 0; i < 4; ++i) {
+      if (i == maximized_view) layout.View(i).SetCanvasRect(vx, vy, vw, vh);
+      else layout.View(i).SetCanvasRect(vx, vy, 0, 0);
+    }
+    return;
+  }
   const int half_w = vw / 2;
   const int half_h = vh / 2;
   layout.View(0).SetCanvasRect(vx, vy, half_w, half_h);
@@ -338,10 +351,38 @@ void TL_BuildStudioOverlay(const TL_GuiStudioRects& rects, const TL_GhDocument* 
     AddText(ov, canvas.x + canvas.w - TextWidth(buf, 1.2f) - 12.0f, canvas.y + 9.0f, 1.2f, buf, kOverlay0);
   }
 
+  // 10-tab Grasshopper Component Battery Palette (Params / Maths / Sets / Vector / Curve / Surface / Mesh / Intersect / Transform / Display)
+  const auto& cats = TL_GhComponentCatalog::Categories();
+  const int active_cat = std::clamp(info.active_gh_category, 0, (int)cats.size() - 1);
+  float cat_x = canvas.x + 8.0f;
+  const float cat_y = canvas.y + 28.0f;
+  for (int ci = 0; ci < (int)cats.size(); ++ci) {
+    const bool is_act = (ci == active_cat);
+    const std::string cshort = cats[(size_t)ci].substr(0, 6);
+    const float cw_tab = TextWidth(cshort, 0.95f) + 12.0f;
+    AddFill(ov, cat_x, cat_y, cw_tab, 16.0f, is_act ? kSurface1 : kMantle, is_act ? kTeal : kSurface0, 1.0f);
+    AddText(ov, cat_x + 6.0f, cat_y + 4.0f, 0.95f, cshort, is_act ? kTeal : kSubtext0);
+    cat_x += cw_tab + 3.0f;
+  }
+
+  // Battery icons row for the active category
+  const float pal_y = canvas.y + 46.0f;
+  AddFill(ov, canvas.x + 8.0f, pal_y, canvas.w - 16.0f, 24.0f, kBase, kSurface0, 1.0f);
+  const auto cat_specs = TL_GhComponentCatalog::ByCategory(cats[(size_t)active_cat]);
+  float bx_pal = canvas.x + 12.0f;
+  for (size_t bi = 0; bi < cat_specs.size() && bi < 10; ++bi) {
+    const std::string bnick = Truncate(cat_specs[bi]->nickname, 56.0f, 0.95f);
+    const float bw_chip = std::max(44.0f, TextWidth(bnick, 0.95f) + 12.0f);
+    if (bx_pal + bw_chip > canvas.x + canvas.w - 12.0f) break;
+    AddFill(ov, bx_pal, pal_y + 3.0f, bw_chip, 18.0f, kSurface0, kLavender, 1.0f);
+    AddText(ov, bx_pal + 6.0f, pal_y + 8.0f, 0.95f, bnick, kText);
+    bx_pal += bw_chip + 5.0f;
+  }
+
   const float cx0 = canvas.x + 14.0f;
-  const float cy0 = canvas.y + 36.0f;
+  const float cy0 = canvas.y + 74.0f;
   const float cw = canvas.w - 28.0f;
-  const float ch = canvas.h - 48.0f;
+  const float ch = canvas.h - 86.0f;
   AddFill(ov, cx0, cy0, cw, ch, kMantle, kSurface0, 1.0f);
 
   if (gh && !gh->Nodes().empty()) {
@@ -368,11 +409,12 @@ void TL_BuildStudioOverlay(const TL_GuiStudioRects& rects, const TL_GhDocument* 
       }
     }
 
-    // Separate horizontal and vertical scale so wide definitions fill vertical canvas height
-    const float sx = std::max(0.32f, std::min(0.75f, (cw - 36.0f) / cb.w));
-    const float sy = std::max(sx, std::min(sx * 1.65f, (ch - 64.0f) / cb.h));
-    const float ox = cx0 + (cw - cb.w * sx) * 0.5f - cb.x * sx;
-    const float oy = cy0 + (ch - cb.h * sy) * 0.52f - cb.y * sy;
+    // Separate horizontal and vertical scale + interactive trackpad zoom/pan
+    const float zoom = std::clamp(info.gh_zoom, 0.25f, 2.50f);
+    const float sx = std::max(0.32f, std::min(0.75f, (cw - 36.0f) / cb.w)) * zoom;
+    const float sy = std::max(sx, std::min(sx * 1.65f, (ch - 64.0f) / cb.h * zoom));
+    const float ox = cx0 + (cw - cb.w * sx) * 0.5f - cb.x * sx + info.gh_pan_x;
+    const float oy = cy0 + (ch - cb.h * sy) * 0.52f - cb.y * sy + info.gh_pan_y;
     auto mx = [&](float x) { return ox + x * sx; };
     auto my = [&](float y) { return oy + y * sy; };
 
@@ -526,6 +568,371 @@ void TL_BuildStudioOverlay(const TL_GuiStudioRects& rects, const TL_GhDocument* 
 }
 
 // ============================================================================
+// Trackpad + mouse interaction state machine
+// ============================================================================
+
+namespace {
+
+int StudioViewportAt(const TL_FourViewLayout& layout, float x, float y) {
+  for (int i = 0; i < 4; ++i) {
+    const TL_Viewport& vp = layout.View(i);
+    if (vp.m_width <= 0 || vp.m_height <= 0) continue;
+    if (x >= vp.m_left && x <= vp.m_left + vp.m_width &&
+        y >= vp.m_top && y <= vp.m_top + vp.m_height)
+      return i;
+  }
+  return -1;
+}
+
+bool InFill(const TL_GuiFill& f, float x, float y) {
+  return x >= f.x && x <= f.x + f.w && y >= f.y && y <= f.y + f.h;
+}
+
+int GhCanvasNodeAt(const TL_GhDocument& gh, const TL_GuiStudioRects& rects,
+                   float x, float y, bool want_slider, int* out_node) {
+  if (!out_node) return 0;
+  const TL_GuiFill& canvas = rects.gh_canvas;
+  const float cx0 = canvas.x + 14.0f;
+  const float cy0 = canvas.y + 74.0f;
+  const float cw = canvas.w - 28.0f;
+  const float ch = canvas.h - 86.0f;
+  const TL_GhRectF cb = gh.CanvasBounds();
+  float sx = std::max(0.32f, std::min(0.75f, (cw - 36.0f) / std::max(1.0f, cb.w)));
+  float sy = std::max(sx, std::min(sx * 1.65f, (ch - 64.0f) / std::max(1.0f, cb.h)));
+  const float ox = cx0 + (cw - cb.w * sx) * 0.5f - cb.x * sx;
+  const float oy = cy0 + (ch - cb.h * sy) * 0.52f - cb.y * sy;
+  for (int i = (int)gh.Nodes().size() - 1; i >= 0; --i) {
+    const TL_GhNode& n = gh.Nodes()[(size_t)i];
+    if (n.is_group || n.is_scribble) continue;
+    if (n.is_slider != want_slider) continue;
+    const float nx = ox + n.bounds.x * sx;
+    const float ny = oy + n.bounds.y * sy;
+    const float nw = std::max(38.0f, n.bounds.w * sx);
+    const float nh = std::max(22.0f, n.bounds.h * sy);
+    if (x >= nx && x <= nx + nw && y >= ny && y <= ny + nh) { *out_node = i; return 1; }
+  }
+  return 0;
+}
+
+}  // namespace
+
+bool TL_ProcessStudioInputEvent(const TL_StudioInputEvent& ev, const TL_GuiStudioRects& rects,
+                                TL_FourViewLayout& layout, const ON_BoundingBox& scene_bbox,
+                                TL_GhDocument* gh_doc, TL_StudioInputState& state) {
+  const int hovered = StudioViewportAt(layout, ev.x, ev.y);
+  const bool in_viewports = InFill(rects.viewports, ev.x, ev.y);
+  const bool in_gh_canvas = InFill(rects.gh_canvas, ev.x, ev.y);
+  const bool in_gh_params = InFill(rects.gh_params, ev.x, ev.y);
+
+  auto refresh_status = [&]() {
+    char buf[192];
+    std::snprintf(buf, sizeof(buf),
+                  "X %.3f  Y %.3f  Z %.3f   | MILLIMETERS   | %s   | OSNAP   | GUMBALL   | GH ZOOM %.2FX",
+                  state.cursor_world.x, state.cursor_world.y, state.cursor_world.z,
+                  state.maximized_view >= 0 ? "MAXIMIZED" : "4-VIEW", state.gh_zoom);
+    state.status_line = buf;
+  };
+
+  switch (ev.kind) {
+    case TL_StudioEventKind::KeyDown: {
+      const int k = std::toupper(ev.key_code);
+      if (k == 'F') {
+        layout.ZoomToFitAll(scene_bbox, 0.92);
+        TL_ApplyStudioViewports(layout, rects, state.maximized_view);
+        return true;
+      }
+      if (k >= '1' && k <= '4') {
+        state.maximized_view = ((state.maximized_view == k - '1') ? -1 : (k - '1'));
+        TL_ApplyStudioViewports(layout, rects, state.maximized_view);
+        refresh_status();
+        return true;
+      }
+      if (k == '0' || ev.key_code == 27) {
+        state.maximized_view = -1;
+        TL_ApplyStudioViewports(layout, rects, state.maximized_view);
+        refresh_status();
+        return true;
+      }
+      return false;
+    }
+    case TL_StudioEventKind::MouseDown: {
+      state.last_mx = ev.x;
+      state.last_my = ev.y;
+
+      // (a) Solved Parameters panel: grab a slider track
+      if (in_gh_params && gh_doc && ev.button == 1) {
+        const int idx = (int)((ev.y - (rects.gh_params.y + 28.0f)) / 26.0f);
+        if (idx >= 0 && idx < (int)gh_doc->SliderCount()) {
+          const float bar_x = rects.gh_params.x + 150.0f;
+          const float bar_w = rects.gh_params.w - 250.0f;
+          double t = std::clamp((double)(ev.x - bar_x) / (double)bar_w, 0.0, 1.0);
+          size_t ord = 0;
+          for (const auto& n : gh_doc->Nodes()) {
+            if (!n.is_slider) continue;
+            if ((int)ord == idx) {
+              gh_doc->SetSliderValueByOrdinal(ord, n.slider.min_val + t * (n.slider.max_val - n.slider.min_val));
+              break;
+            }
+            ++ord;
+          }
+          state.active_slider = idx;
+          return true;
+        }
+      }
+
+      // (b) Grasshopper canvas: category tabs, battery palette, sliders, nodes, pan
+      if (in_gh_canvas && ev.button == 1) {
+        const TL_GuiFill& canvas = rects.gh_canvas;
+        const float cat_y = canvas.y + 28.0f;
+        if (ev.y >= cat_y && ev.y <= cat_y + 16.0f) {
+          float cat_x = canvas.x + 8.0f;
+          const auto& cats = TL_GhComponentCatalog::Categories();
+          for (int ci = 0; ci < (int)cats.size(); ++ci) {
+            const std::string cshort = cats[(size_t)ci].substr(0, 6);
+            const float w_tab = TextWidthOf(cshort, 0.95f) + 12.0f;
+            if (ev.x >= cat_x && ev.x <= cat_x + w_tab) {
+              state.active_gh_category = ci;
+              return true;
+            }
+            cat_x += w_tab + 3.0f;
+          }
+        }
+        const float pal_y = canvas.y + 46.0f;
+        if (ev.y >= pal_y && ev.y <= pal_y + 24.0f && gh_doc) {
+          float bx = canvas.x + 12.0f;
+          const auto specs = TL_GhComponentCatalog::ByCategory(
+            TL_GhComponentCatalog::Categories()[(size_t)state.active_gh_category]);
+          for (size_t bi = 0; bi < specs.size() && bi < 10; ++bi) {
+            const std::string bnick = TruncateStr(specs[bi]->nickname, 56.0f, 0.95f);
+            const float bw = std::max(44.0f, TextWidthOf(bnick, 0.95f) + 12.0f);
+            if (bx + bw > canvas.x + canvas.w - 12.0f) break;
+            if (ev.x >= bx && ev.x <= bx + bw) {
+              gh_doc->AddComponent(specs[bi]->name, 40.0f + 180.0f * (float)(gh_doc->Nodes().size() % 5),
+                                   60.0f + 80.0f * (float)(gh_doc->Nodes().size() % 4));
+              return true;
+            }
+            bx += bw + 5.0f;
+          }
+        }
+        if (gh_doc) {
+          int slider_node = -1;
+          if (GhCanvasNodeAt(*gh_doc, rects, ev.x, ev.y, true, &slider_node)) {
+            state.dragging_canvas_slider = slider_node;
+            return true;
+          }
+          int any_node = -1;
+          if (GhCanvasNodeAt(*gh_doc, rects, ev.x, ev.y, false, &any_node)) {
+            state.dragging_canvas_node = any_node;
+            return true;
+          }
+        }
+      }
+      if (in_gh_canvas && (ev.button == 2 || ev.button == 3)) {
+        state.panning_gh_canvas = true;
+        return true;
+      }
+
+      // (c) 3D viewports: Gumball axis, double-click maximize, orbit/pan/zoom drag
+      if (hovered >= 0 && in_viewports) {
+        state.active_view = hovered;
+        if (ev.clicks >= 2) {
+          const TL_Viewport& vp = layout.View(hovered);
+          if (ev.y <= vp.m_top + 26.0f) {
+            state.maximized_view = (state.maximized_view == hovered) ? -1 : hovered;
+            TL_ApplyStudioViewports(layout, rects, state.maximized_view);
+            refresh_status();
+            return true;
+          }
+        }
+        if (ev.button == 1 && state.dragging_gumball_axis < 0) {
+          ON_2dPoint c2d;
+          if (layout.View(hovered).WorldToScreen(state.gumball_origin, c2d)) {
+            const double R = std::max(1.0, state.gumball_radius);
+            const ON_3dPoint axes[3] = {
+              state.gumball_origin + ON_3dVector(R, 0, 0),
+              state.gumball_origin + ON_3dVector(0, R, 0),
+              state.gumball_origin + ON_3dVector(0, 0, R)};
+            for (int a = 0; a < 3; ++a) {
+              ON_2dPoint p2d;
+              if (!layout.View(hovered).WorldToScreen(axes[a], p2d)) continue;
+              double dx = p2d.x - c2d.x, dy = p2d.y - c2d.y;
+              double len = std::hypot(dx, dy);
+              if (len < 6.0) continue;
+              const double ux = dx / len, uy = dy / len;
+              const double ex = c2d.x + ux * 42.0, ey = c2d.y + uy * 42.0;
+              const double dist = std::hypot(ev.x - ex, ev.y - ey);
+              const double proj = (ev.x - c2d.x) * ux + (ev.y - c2d.y) * uy;
+              if (dist < 14.0 && proj > 8.0) {
+                state.dragging_gumball_axis = a;
+                return true;
+              }
+            }
+          }
+        }
+        state.dragging_view = true;
+        const bool is_persp = (layout.View(hovered).m_projection == TL_PROJECTION_PERSPECTIVE);
+        state.zoom_drag_mode = (ev.button == 3 && (ev.mod_ctrl || ev.mod_cmd));
+        if (state.zoom_drag_mode) state.orbit_mode = false;
+        else if (ev.button == 2 || (ev.button == 3 && ev.mod_shift)) state.orbit_mode = false;
+        else if (ev.button == 3) state.orbit_mode = is_persp;
+        else if (ev.button == 1) state.orbit_mode = is_persp && ev.mod_alt;
+        return true;
+      }
+      return false;
+    }
+    case TL_StudioEventKind::MouseUp: {
+      state.dragging_view = false;
+      state.active_slider = -1;
+      state.dragging_canvas_slider = -1;
+      state.dragging_canvas_node = -1;
+      state.panning_gh_canvas = false;
+      state.dragging_gumball_axis = -1;
+      return false;
+    }
+    case TL_StudioEventKind::MouseMove: {
+      const float dx = ev.x - state.last_mx;
+      const float dy = ev.y - state.last_my;
+      state.last_mx = ev.x;
+      state.last_my = ev.y;
+      bool dirty = false;
+
+      if (state.active_slider >= 0 && gh_doc) {
+        const float bar_x = rects.gh_params.x + 150.0f;
+        const float bar_w = rects.gh_params.w - 250.0f;
+        const double t = std::clamp((double)(ev.x - bar_x) / (double)bar_w, 0.0, 1.0);
+        size_t ord = 0;
+        for (const auto& n : gh_doc->Nodes()) {
+          if (!n.is_slider) continue;
+          if ((int)ord == state.active_slider) {
+            gh_doc->SetSliderValueByOrdinal(ord, n.slider.min_val + t * (n.slider.max_val - n.slider.min_val));
+            break;
+          }
+          ++ord;
+        }
+        return true;
+      }
+      if (state.dragging_canvas_slider >= 0 && gh_doc) {
+        auto& nodes = gh_doc->NodesMutable();
+        if (state.dragging_canvas_slider < (int)nodes.size()) {
+          TL_GhNode& n = nodes[(size_t)state.dragging_canvas_slider];
+          double t = std::clamp((double)(ev.x - (rects.gh_canvas.x + 40.0f)) /
+                                  std::max(40.0, (double)rects.gh_canvas.w - 80.0), 0.0, 1.0);
+          gh_doc->SetSliderValue(n.nickname, n.slider.min_val + t * (n.slider.max_val - n.slider.min_val));
+          return true;
+        }
+      }
+      if (state.dragging_canvas_node >= 0 && gh_doc) {
+        auto& nodes = gh_doc->NodesMutable();
+        if (state.dragging_canvas_node < (int)nodes.size()) {
+          TL_GhNode& n = nodes[(size_t)state.dragging_canvas_node];
+          gh_doc->MoveNode(state.dragging_canvas_node, n.bounds.x + dx, n.bounds.y + dy);
+          return true;
+        }
+      }
+      if (state.panning_gh_canvas) {
+        state.gh_pan_x += dx;
+        state.gh_pan_y += dy;
+        return true;
+      }
+      if (state.dragging_gumball_axis >= 0 && state.active_view >= 0) {
+        const TL_Viewport& vp = layout.View(state.active_view);
+        ON_2dPoint c2d;
+        if (vp.WorldToScreen(state.gumball_origin, c2d)) {
+          const double R = std::max(1.0, state.gumball_radius);
+          ON_3dPoint tip = state.gumball_origin;
+          if (state.dragging_gumball_axis == 1) tip += ON_3dVector(0, R, 0);
+          else if (state.dragging_gumball_axis == 2) tip += ON_3dVector(0, 0, R);
+          else tip += ON_3dVector(R, 0, 0);
+          ON_2dPoint t2d;
+          if (vp.WorldToScreen(tip, t2d)) {
+            const double sx = t2d.x - c2d.x, sy = t2d.y - c2d.y;
+            const double slen2 = sx * sx + sy * sy;
+            if (slen2 > 1e-6) {
+              const double along = ((double)ev.dx * sx + (double)ev.dy * sy) / slen2 * R;
+              ON_3dPoint offs = ON_3dPoint::Origin;
+              if (state.dragging_gumball_axis == 1) offs = ON_3dVector(0, along, 0);
+              else if (state.dragging_gumball_axis == 2) offs = ON_3dVector(0, 0, along);
+              else offs = ON_3dVector(along, 0, 0);
+              state.gumball_origin += offs;
+              refresh_status();
+            }
+          }
+        }
+        return true;
+      }
+      if (state.dragging_view && state.active_view >= 0) {
+        TL_Viewport& vp = layout.View(state.active_view);
+        if (state.zoom_drag_mode) {
+          vp.Zoom(dy > 0 ? 1.0 / (1.0 + std::fabs(dy) * 0.01) : 1.0 + std::fabs(dy) * 0.01, nullptr);
+        } else if (state.orbit_mode && vp.m_projection == TL_PROJECTION_PERSPECTIVE) {
+          ON_Xform rz, rr;
+          rz.Rotation(-dx * 0.008, ON_3dVector::ZAxis, ON_3dPoint::Origin);
+          vp.m_camera_dir = rz * vp.m_camera_dir;
+          rr.Rotation(-dy * 0.006, vp.ScreenRight(), ON_3dPoint::Origin);
+          vp.m_camera_dir = rr * vp.m_camera_dir;
+          vp.m_camera_dir.Unitize();
+        } else {
+          vp.Pan(dx, dy);
+        }
+        dirty = true;
+      }
+      if (hovered >= 0) {
+        ON_3dPoint w = ON_3dPoint::Origin;
+        if (layout.View(hovered).ScreenToPlane(ON_2dPoint(ev.x, ev.y), ON_Plane::World_xy, w))
+          state.cursor_world = w;
+        refresh_status();
+      }
+      return dirty;
+    }
+    case TL_StudioEventKind::MouseWheel: {
+      const float scroll = (std::fabs(ev.wheel_y) > 1e-6f) ? ev.wheel_y : -ev.wheel_x;
+      if (in_gh_canvas) {
+        if (ev.mod_ctrl || ev.mod_cmd || !ev.is_trackpad_scroll) {
+          state.gh_zoom = std::clamp(state.gh_zoom * (1.0f + scroll * 0.10f), 0.25f, 2.50f);
+        } else {
+          state.gh_pan_x += ev.wheel_x * 12.0f;
+          state.gh_pan_y += ev.wheel_y * 12.0f;
+        }
+        refresh_status();
+        return true;
+      }
+      if (hovered >= 0) {
+        TL_Viewport& vp = layout.View(hovered);
+        const bool want_zoom = ev.mod_ctrl || ev.mod_cmd || !ev.is_trackpad_scroll;
+        if (want_zoom) {
+          ON_2dPoint anchor(ev.x, ev.y);
+          vp.Zoom(1.0 + scroll * 0.12, &anchor);
+        } else if (ev.mod_alt) {
+          ON_Xform rz;
+          rz.Rotation(-ev.wheel_x * 0.05, ON_3dVector::ZAxis, ON_3dPoint::Origin);
+          vp.m_camera_dir = rz * vp.m_camera_dir;
+          vp.m_camera_dir.Unitize();
+        } else {
+          vp.Pan(ev.wheel_x * 14.0f, ev.wheel_y * 14.0f);
+        }
+        return true;
+      }
+      return false;
+    }
+    case TL_StudioEventKind::TrackpadPinch: {
+      const float s = (std::fabs(ev.pinch_scale) < 1e-4f) ? 1.0f : ev.pinch_scale;
+      if (in_gh_canvas) {
+        state.gh_zoom = std::clamp(state.gh_zoom * s, 0.25f, 2.50f);
+        refresh_status();
+        return true;
+      }
+      if (hovered >= 0) {
+        ON_2dPoint anchor(ev.x, ev.y);
+        layout.View(hovered).Zoom(s, &anchor);
+        return true;
+      }
+      return false;
+    }
+  }
+  return false;
+}
+
+// ============================================================================
 // Interactive SDL3 Desktop Window (`--gui`)
 // ============================================================================
 
@@ -546,28 +953,24 @@ bool TL_RunInteractiveStudioWindow(
     if (error_out) *error_out = std::string("SDL_Init failed: ") + SDL_GetError();
     return false;
   }
-
-  const int win_w = 1920;
-  const int win_h = 1080;
-  SDL_Window* window = SDL_CreateWindow("Ohino Studio 9 WIP (SDL3 + Vulkan 1.2)", win_w, win_h, SDL_WINDOW_RESIZABLE);
-  if (!window) {
-    if (error_out) *error_out = std::string("SDL_CreateWindow failed: ") + SDL_GetError();
+  const int win_w = 1920, win_h = 1080;
+  SDL_Window* window = SDL_CreateWindow("Ohino Studio 9 WIP (SDL3 + Vulkan 1.2)", win_w, win_h,
+                                        SDL_WINDOW_RESIZABLE);
+  SDL_Renderer* rend = window ? SDL_CreateRenderer(window, nullptr) : nullptr;
+  SDL_Texture* tex = rend ? SDL_CreateTexture(rend, SDL_PIXELFORMAT_RGBA32,
+                                              SDL_TEXTUREACCESS_STREAMING, win_w, win_h) : nullptr;
+  if (!window || !rend || !tex) {
+    if (error_out) *error_out = std::string("SDL window creation failed: ") + SDL_GetError();
+    if (tex) SDL_DestroyTexture(tex);
+    if (rend) SDL_DestroyRenderer(rend);
+    if (window) SDL_DestroyWindow(window);
     SDL_Quit();
     return false;
   }
-  SDL_Renderer* sdl_renderer = SDL_CreateRenderer(window, nullptr);
-  if (!sdl_renderer) {
-    if (error_out) *error_out = std::string("SDL_CreateRenderer failed: ") + SDL_GetError();
-    SDL_DestroyWindow(window);
-    SDL_Quit();
-    return false;
-  }
-  SDL_Texture* texture = SDL_CreateTexture(
-    sdl_renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING, win_w, win_h);
 
-  TL_GuiStudioRects studio_rects = TL_ComputeStudioRects(win_w, win_h);
+  const TL_GuiStudioRects rects = TL_ComputeStudioRects(win_w, win_h);
   TL_FourViewLayout layout = TL_FourViewLayout::Default(win_w, win_h);
-  TL_ApplyStudioViewports(layout, studio_rects);
+  TL_ApplyStudioViewports(layout, rects, -1);
 
   ON_BoundingBox scene_bbox = base_scene.GetSceneBoundingBox();
   for (const ON_Mesh* m : base_meshes) {
@@ -577,118 +980,73 @@ bool TL_RunInteractiveStudioWindow(
   if (!scene_bbox.IsValid())
     scene_bbox = ON_BoundingBox(ON_3dPoint(-15, -15, -5), ON_3dPoint(15, 15, 15));
   layout.ZoomToFitAll(scene_bbox, 0.92);
-  TL_ApplyStudioViewports(layout, studio_rects);
+  TL_ApplyStudioViewports(layout, rects, -1);
 
-  TL_VulkanFourViewRenderer vk_renderer;
-  bool dirty = true;
-  bool running = true;
+  TL_StudioInputState state;
+  state.gumball_origin = scene_bbox.Center();
+  state.gumball_radius = std::max(4.0, scene_bbox.Diagonal().Length() * 0.12);
+
+  TL_VulkanFourViewRenderer vk;
+  bool dirty = true, running = true;
   int frames = 0;
-  int active_view = -1;
-  bool dragging_view = false;
-  bool orbit_mode = false;
-  int active_slider = -1;
-  float last_mx = 0.0f, last_my = 0.0f;
 
-  auto find_viewport_at = [&](float x, float y) -> int {
-    for (int i = 0; i < 4; ++i) {
-      const TL_Viewport& vp = layout.View(i);
-      if (x >= vp.m_left && x <= vp.m_left + vp.m_width &&
-          y >= vp.m_top && y <= vp.m_top + vp.m_height)
-        return i;
-    }
-    return -1;
-  };
-
-  auto update_slider_from_mouse = [&](int slider_idx, float mx_pos) {
-    if (!gh_doc) return;
-    const float bar_x = studio_rects.gh_params.x + 150.0f;
-    const float bar_w = studio_rects.gh_params.w - 250.0f;
-    const double t = std::clamp((double)(mx_pos - bar_x) / (double)bar_w, 0.0, 1.0);
-    size_t ord = 0;
-    for (const auto& n : gh_doc->Nodes()) {
-      if (!n.is_slider) continue;
-      if ((int)ord == slider_idx) {
-        const double v = n.slider.min_val + t * (n.slider.max_val - n.slider.min_val);
-        gh_doc->SetSliderValueByOrdinal(ord, v);
-        dirty = true;
-        break;
-      }
-      ++ord;
-    }
+  auto pump = [&](const TL_StudioInputEvent& ev) {
+    if (TL_ProcessStudioInputEvent(ev, rects, layout, scene_bbox, gh_doc, state)) dirty = true;
   };
 
   while (running) {
-    SDL_Event ev;
-    while (SDL_PollEvent(&ev)) {
-      if (ev.type == SDL_EVENT_QUIT) {
-        running = false;
-      } else if (ev.type == SDL_EVENT_KEY_DOWN) {
-        if (ev.key.key == SDLK_ESCAPE) running = false;
-        else if (ev.key.key == SDLK_F) {
-          layout.ZoomToFitAll(scene_bbox, 0.92);
-          TL_ApplyStudioViewports(layout, studio_rects);
-          dirty = true;
+    SDL_Event e;
+    while (SDL_PollEvent(&e)) {
+      const bool shift = (e.key.mod & SDL_KMOD_SHIFT) != 0;
+      const bool ctrl = (e.key.mod & SDL_KMOD_CTRL) != 0;
+      const bool alt = (e.key.mod & SDL_KMOD_ALT) != 0;
+      const bool gui = (e.key.mod & SDL_KMOD_GUI) != 0;
+      TL_StudioInputEvent ev;
+      switch (e.type) {
+        case SDL_EVENT_QUIT: running = false; break;
+        case SDL_EVENT_KEY_DOWN:
+          if (e.key.key == SDLK_ESCAPE) { running = false; break; }
+          ev.kind = TL_StudioEventKind::KeyDown;
+          ev.key_code = (int)e.key.key;
+          pump(ev);
+          break;
+        case SDL_EVENT_MOUSE_BUTTON_DOWN:
+        case SDL_EVENT_MOUSE_BUTTON_UP:
+          ev.kind = (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) ? TL_StudioEventKind::MouseDown
+                                                           : TL_StudioEventKind::MouseUp;
+          ev.x = e.button.x; ev.y = e.button.y;
+          ev.button = (e.button.button == SDL_BUTTON_LEFT) ? 1
+                    : (e.button.button == SDL_BUTTON_MIDDLE ? 2 : 3);
+          ev.clicks = e.button.clicks;
+          ev.mod_shift = shift; ev.mod_ctrl = ctrl; ev.mod_alt = alt; ev.mod_cmd = gui;
+          pump(ev);
+          break;
+        case SDL_EVENT_MOUSE_MOTION: {
+          ev.kind = TL_StudioEventKind::MouseMove;
+          ev.x = e.motion.x; ev.y = e.motion.y;
+          ev.dx = e.motion.xrel; ev.dy = e.motion.yrel;
+          pump(ev);
+          break;
         }
-      } else if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
-        const float mx_e = ev.button.x;
-        const float my_e = ev.button.y;
-        last_mx = mx_e; last_my = my_e;
-        // Check Solved Parameters slider bars
-        if (gh_doc && mx_e >= studio_rects.gh_params.x &&
-            mx_e <= studio_rects.gh_params.x + studio_rects.gh_params.w &&
-            my_e >= studio_rects.gh_params.y + 28.0f) {
-          const int idx = (int)((my_e - (studio_rects.gh_params.y + 28.0f)) / 26.0f);
-          if (idx >= 0 && idx < (int)gh_doc->SliderCount()) {
-            active_slider = idx;
-            update_slider_from_mouse(active_slider, mx_e);
-          }
-        } else {
-          const int vi = find_viewport_at(mx_e, my_e);
-          if (vi >= 0) {
-            active_view = vi;
-            dragging_view = true;
-            orbit_mode = (ev.button.button == SDL_BUTTON_RIGHT) ||
-                         (layout.View(vi).m_projection == TL_PROJECTION_PERSPECTIVE &&
-                          ev.button.button == SDL_BUTTON_LEFT);
-          }
+        case SDL_EVENT_MOUSE_WHEEL: {
+          ev.kind = TL_StudioEventKind::MouseWheel;
+          ev.x = e.wheel.mouse_x; ev.y = e.wheel.mouse_y;
+          const float fy = (e.wheel.direction == SDL_MOUSEWHEEL_FLIPPED) ? -e.wheel.y : e.wheel.y;
+          const float fx = (e.wheel.direction == SDL_MOUSEWHEEL_FLIPPED) ? -e.wheel.x : e.wheel.x;
+          ev.wheel_x = fx; ev.wheel_y = fy;
+          // Trackpad two-finger scroll arrives as continuous sub-tick deltas.
+          ev.is_trackpad_scroll = (e.wheel.integer_y == 0 && std::fabs(fy) < 3.0f);
+          ev.mod_shift = shift; ev.mod_ctrl = ctrl; ev.mod_alt = alt; ev.mod_cmd = gui;
+          pump(ev);
+          break;
         }
-      } else if (ev.type == SDL_EVENT_MOUSE_BUTTON_UP) {
-        dragging_view = false;
-        active_slider = -1;
-      } else if (ev.type == SDL_EVENT_MOUSE_MOTION) {
-        const float mx_e = ev.motion.x;
-        const float my_e = ev.motion.y;
-        if (active_slider >= 0) {
-          update_slider_from_mouse(active_slider, mx_e);
-        } else if (dragging_view && active_view >= 0) {
-          const float dx = mx_e - last_mx;
-          const float dy = my_e - last_my;
-          TL_Viewport& vp = layout.View(active_view);
-          if (orbit_mode && vp.m_projection == TL_PROJECTION_PERSPECTIVE) {
-            const double yaw = -dx * 0.008;
-            const double pitch = -dy * 0.006;
-            ON_Xform rot_z;
-            rot_z.Rotation(yaw, ON_3dVector::ZAxis, ON_3dPoint::Origin);
-            vp.m_camera_dir = rot_z * vp.m_camera_dir;
-            ON_3dVector right = vp.ScreenRight();
-            ON_Xform rot_r;
-            rot_r.Rotation(pitch, right, ON_3dPoint::Origin);
-            vp.m_camera_dir = rot_r * vp.m_camera_dir;
-            vp.m_camera_dir.Unitize();
-          } else {
-            vp.Pan(dx, dy);
-          }
-          dirty = true;
-        }
-        last_mx = mx_e; last_my = my_e;
-      } else if (ev.type == SDL_EVENT_MOUSE_WHEEL) {
-        const int vi = find_viewport_at(last_mx, last_my);
-        if (vi >= 0) {
-          const double factor = (ev.wheel.y > 0) ? 1.12 : (1.0 / 1.12);
-          ON_2dPoint anchor(last_mx, last_my);
-          layout.View(vi).Zoom(factor, &anchor);
-          dirty = true;
-        }
+        case SDL_EVENT_PINCH_UPDATE:
+          ev.kind = TL_StudioEventKind::TrackpadPinch;
+          ev.pinch_scale = e.pinch.scale;
+          ev.x = state.last_mx; ev.y = state.last_my;
+          pump(ev);
+          break;
+        default: break;
       }
     }
 
@@ -696,50 +1054,50 @@ bool TL_RunInteractiveStudioWindow(
       opentl::mvp::SceneDocument frame_scene = base_scene;
       std::vector<const ON_Mesh*> frame_meshes = base_meshes;
       std::vector<const float*> frame_colors = base_mesh_colors;
-      std::vector<ON_Mesh*> gh_baked_meshes;
+      std::vector<ON_Mesh*> baked;
       if (gh_doc) {
-        gh_doc->BakeToScene(frame_scene, gh_baked_meshes, &frame_colors);
-        for (ON_Mesh* m : gh_baked_meshes) frame_meshes.push_back(m);
+        gh_doc->BakeToScene(frame_scene, baked, &frame_colors);
+        for (ON_Mesh* m : baked) frame_meshes.push_back(m);
       }
-
       TL_GuiStudioInfo info;
-      info.title = "OHINO STUDIO 9 WIP";
       info.command = "COMMAND: _GRASSHOPPER _INTERACTIVE";
       info.object_count = frame_scene.Objects().size();
       info.mesh_count = frame_meshes.size();
       info.layout = &layout;
-      info.gumball_origin = scene_bbox.Center();
-      info.gumball_radius = std::max(4.0, scene_bbox.Diagonal().Length() * 0.12);
+      info.gumball_origin = state.gumball_origin;
+      info.gumball_radius = state.gumball_radius;
+      info.active_gumball_axis = state.dragging_gumball_axis;
+      info.active_gh_category = state.active_gh_category;
+      info.gh_zoom = state.gh_zoom;
+      info.gh_pan_x = state.gh_pan_x;
+      info.gh_pan_y = state.gh_pan_y;
+      info.maximized_view = state.maximized_view;
+      info.status = state.status_line;
 
       TL_VulkanRenderOptions opts;
       opts.sample_count = 4;
       opts.enable_depth = true;
       opts.enable_shaded_meshes = true;
       opts.mesh_colors = frame_colors;
-      TL_BuildStudioOverlay(studio_rects, gh_doc, info, opts.gui);
+      TL_BuildStudioOverlay(rects, gh_doc, info, opts.gui);
 
       TL_VulkanRenderResult res;
-      if (vk_renderer.RenderScene(frame_scene, layout, res, frame_meshes, opts) &&
-          !res.rgba.empty()) {
-        SDL_UpdateTexture(texture, nullptr, res.rgba.data(), win_w * 4);
-      }
-      for (ON_Mesh* m : gh_baked_meshes) delete m;
+      if (vk.RenderScene(frame_scene, layout, res, frame_meshes, opts) && !res.rgba.empty())
+        SDL_UpdateTexture(tex, nullptr, res.rgba.data(), win_w * 4);
+      for (ON_Mesh* m : baked) delete m;
       dirty = false;
     }
 
-    SDL_RenderClear(sdl_renderer);
-    SDL_RenderTexture(sdl_renderer, texture, nullptr, nullptr);
-    SDL_RenderPresent(sdl_renderer);
+    SDL_RenderClear(rend);
+    SDL_RenderTexture(rend, tex, nullptr, nullptr);
+    SDL_RenderPresent(rend);
     ++frames;
-    if (max_frames > 0 && frames >= max_frames) {
-      running = false;
-    } else {
-      SDL_Delay(16);
-    }
+    if (max_frames > 0 && frames >= max_frames) running = false;
+    else SDL_Delay(16);
   }
 
-  SDL_DestroyTexture(texture);
-  SDL_DestroyRenderer(sdl_renderer);
+  SDL_DestroyTexture(tex);
+  SDL_DestroyRenderer(rend);
   SDL_DestroyWindow(window);
   SDL_Quit();
   return true;

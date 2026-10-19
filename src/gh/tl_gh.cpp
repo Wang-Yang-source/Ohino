@@ -681,6 +681,247 @@ bool NameIs(const std::string& n, const char* a, const char* b = nullptr, const 
 
 }  // namespace
 
+
+// ============================================================================
+// Comprehensive Grasshopper 10-Tab Component Battery Catalog (128 batteries)
+// ============================================================================
+
+const std::vector<std::string>& TL_GhComponentCatalog::Categories() {
+  static const std::vector<std::string> kCats = {
+    "Params", "Maths", "Sets", "Vector", "Curve",
+    "Surface", "Mesh", "Intersect", "Transform", "Display"
+  };
+  return kCats;
+}
+
+static TL_GhPortSpec PSpec(const char* name, const char* nick, const char* desc = "") {
+  return TL_GhPortSpec{name, nick, desc};
+}
+
+const std::vector<TL_GhComponentSpec>& TL_GhComponentCatalog::All() {
+  static const std::vector<TL_GhComponentSpec> kSpecs = {
+    // ---- 1. Params (20) ----------------------------------------------------
+    {"Params","Geometry","Point","Pt","3D point parameter",{},{PSpec("Point","Pt")}},
+    {"Params","Geometry","Vector","Vec","3D vector parameter",{},{PSpec("Vector","V")}},
+    {"Params","Geometry","Circle","Cir","Circle primitive parameter",{},{PSpec("Circle","C")}},
+    {"Params","Geometry","Arc","Arc","Circular arc parameter",{},{PSpec("Arc","A")}},
+    {"Params","Geometry","Line","Ln","Line segment parameter",{},{PSpec("Line","L")}},
+    {"Params","Geometry","Curve","Crv","Generic NURBS curve parameter",{},{PSpec("Curve","C")}},
+    {"Params","Geometry","Surface","Srf","NURBS surface parameter",{},{PSpec("Surface","S")}},
+    {"Params","Geometry","Brep","Brep","Boundary representation solid",{},{PSpec("Brep","B")}},
+    {"Params","Geometry","Mesh","Mesh","Polygon mesh parameter",{},{PSpec("Mesh","M")}},
+    {"Params","Geometry","Box","Box","Bounding box parameter",{},{PSpec("Box","B")}},
+    {"Params","Geometry","Plane","Pln","Construction plane parameter",{},{PSpec("Plane","P")}},
+    {"Params","Primitive","Number","Num","Floating-point number parameter",{},{PSpec("Number","N")}},
+    {"Params","Primitive","Integer","Int","Integer number parameter",{},{PSpec("Integer","I")}},
+    {"Params","Primitive","Boolean","Bool","Boolean parameter",{},{PSpec("Boolean","B")}},
+    {"Params","Input","Number Slider","Slider","Interactive numeric slider",{},{PSpec("Number","N")}},
+    {"Params","Input","Control Knob","Knob","Rotary numeric control knob",{},{PSpec("Number","N")}},
+    {"Params","Input","Digit Scroller","Scroller","Numeric digit scroller",{},{PSpec("Number","N")}},
+    {"Params","Input","Panel","Panel","Text & data inspection panel",{PSpec("Input","I")},{PSpec("Output","O")}},
+    {"Params","Input","Boolean Toggle","Toggle","Interactive true/false switch",{},{PSpec("Boolean","B")}},
+    {"Params","Input","Colour Swatch","Swatch","RGBA colour picker",{},{PSpec("Colour","C")}},
+    {"Params","Util","Relay","Relay","Wire pass-through relay",{PSpec("Input","I")},{PSpec("Output","O")}},
+    {"Params","Util","Graph Mapper","Graph","Remap numbers through function graph",{PSpec("Input","X")},{PSpec("Output","Y")}},
+
+    // ---- 2. Maths (26) -----------------------------------------------------
+    {"Maths","Operators","Addition","A+B","Mathematical addition",{PSpec("A","A"),PSpec("B","B")},{PSpec("Result","R")}},
+    {"Maths","Operators","Subtraction","A-B","Mathematical subtraction",{PSpec("A","A"),PSpec("B","B")},{PSpec("Result","R")}},
+    {"Maths","Operators","Multiplication","A*B","Mathematical multiplication",{PSpec("A","A"),PSpec("B","B")},{PSpec("Result","R")}},
+    {"Maths","Operators","Division","A/B","Mathematical division",{PSpec("A","A"),PSpec("B","B")},{PSpec("Result","R")}},
+    {"Maths","Operators","Modulus","Mod","Remainder of division",{PSpec("A","A"),PSpec("B","B")},{PSpec("Result","R")}},
+    {"Maths","Operators","Power","Pow","Raise A to the power B",{PSpec("Base","A"),PSpec("Exponent","B")},{PSpec("Result","R")}},
+    {"Maths","Operators","Absolute","Abs","Absolute value |x|",{PSpec("Value","x")},{PSpec("Result","y")}},
+    {"Maths","Operators","Negate","Neg","Arithmetic negation -x",{PSpec("Value","x")},{PSpec("Result","y")}},
+    {"Maths","Operators","Factorial","Fact","Factorial n!",{PSpec("Value","n")},{PSpec("Result","R")}},
+    {"Maths","Operators","Larger Than",">","Test if A > B",{PSpec("A","A"),PSpec("B","B")},{PSpec("Larger",">"),PSpec("largerOrEqual",">=")}},
+    {"Maths","Operators","Smaller Than","<","Test if A < B",{PSpec("A","A"),PSpec("B","B")},{PSpec("Smaller","<"),PSpec("SmallerOrEqual","<=")}},
+    {"Maths","Operators","Equality","=","Test if A == B",{PSpec("A","A"),PSpec("B","B")},{PSpec("Equal","="),PSpec("Differ","!=")}},
+    {"Maths","Operators","Gate And","And","Boolean conjunction",{PSpec("A","A"),PSpec("B","B")},{PSpec("Result","R")}},
+    {"Maths","Operators","Gate Or","Or","Boolean disjunction",{PSpec("A","A"),PSpec("B","B")},{PSpec("Result","R")}},
+    {"Maths","Operators","Gate Not","Not","Boolean negation",{PSpec("A","A")},{PSpec("Result","R")}},
+    {"Maths","Util","Average","Avg","Arithmetic mean of values",{PSpec("Input","I")},{PSpec("Arithmetic mean","AM")}},
+    {"Maths","Util","Mass Addition","MA","Sum and partial sums of a list",{PSpec("Input","I")},{PSpec("Result","R"),PSpec("Partial Results","Pr")}},
+    {"Maths","Util","Minimum","Min","Lesser of two numbers",{PSpec("A","A"),PSpec("B","B")},{PSpec("Result","R")}},
+    {"Maths","Util","Maximum","Max","Greater of two numbers",{PSpec("A","A"),PSpec("B","B")},{PSpec("Result","R")}},
+    {"Maths","Trig","Sine","Sin","Trigonometric sine",{PSpec("Value","x")},{PSpec("Result","y")}},
+    {"Maths","Trig","Cosine","Cos","Trigonometric cosine",{PSpec("Value","x")},{PSpec("Result","y")}},
+    {"Maths","Trig","Tangent","Tan","Trigonometric tangent",{PSpec("Value","x")},{PSpec("Result","y")}},
+    {"Maths","Trig","Radians","Rad","Degrees to radians",{PSpec("Degrees","d")},{PSpec("Radians","r")}},
+    {"Maths","Trig","Degrees","Deg","Radians to degrees",{PSpec("Radians","r")},{PSpec("Degrees","d")}},
+    {"Maths","Polynomials","Square Root","Sqrt","Principal square root",{PSpec("Value","x")},{PSpec("Result","y")}},
+    {"Maths","Polynomials","Logarithm","Ln","Natural logarithm",{PSpec("Value","x")},{PSpec("Result","y")}},
+    {"Maths","Domain","Construct Domain","Dom","Create numeric interval [A, B]",{PSpec("Domain start","A"),PSpec("Domain end","B")},{PSpec("Domain","I")}},
+    {"Maths","Domain","Deconstruct Domain","DeDom","Extract start and end of interval",{PSpec("Domain","I")},{PSpec("Start","S"),PSpec("End","E")}},
+    {"Maths","Domain","Bounds","Bnd","Numeric min/max interval enclosing a list",{PSpec("Numbers","N")},{PSpec("Domain","I")}},
+    {"Maths","Domain","Remap Numbers","Remap","Remap numbers from source to target domain",{PSpec("Value","V"),PSpec("Source","S"),PSpec("Target","T")},{PSpec("Mapped","R"),PSpec("Clipped","C")}},
+    {"Maths","Domain","Includes","Inc","Test if value is inside interval",{PSpec("Value","V"),PSpec("Domain","D")},{PSpec("Includes","I"),PSpec("Distance","d")}},
+    {"Maths","Script","Expression","Expr","Evaluate mathematical expression",{PSpec("Variable x","x"),PSpec("Variable y","y"),PSpec("Variable z","z")},{PSpec("Result","R")}},
+    {"Maths","Script","Evaluate","Eval","Evaluate f(x, y, z)",{PSpec("Expression","F"),PSpec("x","x"),PSpec("y","y")},{PSpec("Result","r")}},
+
+    // ---- 3. Sets (20) ------------------------------------------------------
+    {"Sets","Sequence","Series","Ser","Arithmetic sequence S + i*N",{PSpec("Start","S"),PSpec("Step","N"),PSpec("Count","C")},{PSpec("Series","S")}},
+    {"Sets","Sequence","Range","Rng","Divide domain into N equal steps",{PSpec("Domain","D"),PSpec("Steps","N")},{PSpec("Range","R")}},
+    {"Sets","Sequence","Random","Rnd","Deterministic pseudo-random numbers",{PSpec("Range","R"),PSpec("Number","N"),PSpec("Seed","S")},{PSpec("Random","R")}},
+    {"Sets","Sequence","Duplicate Data","Dup","Repeat data list N times",{PSpec("Data","D"),PSpec("Number","N")},{PSpec("Data","D")}},
+    {"Sets","Sequence","Cull Pattern","CullP","Cull elements using repeating boolean pattern",{PSpec("List","L"),PSpec("Cull Pattern","P")},{PSpec("List","L")}},
+    {"Sets","Sequence","Cull Index","CullI","Remove elements at indices",{PSpec("List","L"),PSpec("Indices","I")},{PSpec("List","L")}},
+    {"Sets","Sequence","Cull Nth","CullN","Cull every Nth element",{PSpec("List","L"),PSpec("Cull frequency","N")},{PSpec("List","L")}},
+    {"Sets","List","List Item","Item","Retrieve specific item from list",{PSpec("List","L"),PSpec("Index","i"),PSpec("Wrap","W")},{PSpec("Item","i"),PSpec("Item +1","+1")}},
+    {"Sets","List","List Length","Lng","Measure length of list",{PSpec("List","L")},{PSpec("Length","L")}},
+    {"Sets","List","Reverse List","Rev","Reverse order of list",{PSpec("List","L")},{PSpec("List","L")}},
+    {"Sets","List","Shift List","Shift","Offset list indices by S",{PSpec("List","L"),PSpec("Shift","S"),PSpec("Wrap","W")},{PSpec("List","L")}},
+    {"Sets","List","Split List","Split","Split list into two parts at index",{PSpec("List","L"),PSpec("Index","i")},{PSpec("List A","A"),PSpec("List B","B")}},
+    {"Sets","List","Sub List","Sub","Extract subset over domain",{PSpec("List","L"),PSpec("Domain","I")},{PSpec("List","L")}},
+    {"Sets","List","Dispatch","Disp","Dispatch items into two target lists",{PSpec("List","L"),PSpec("Pattern","P")},{PSpec("List A","A"),PSpec("List B","B")}},
+    {"Sets","List","Sort List","Sort","Sort numeric keys and synchronous values",{PSpec("Keys","K"),PSpec("Values A","A")},{PSpec("Keys","K"),PSpec("Values A","A")}},
+    {"Sets","List","Weave","Weave","Weave two input streams by pattern",{PSpec("Pattern","P"),PSpec("Stream 0","0"),PSpec("Stream 1","1")},{PSpec("Weave","W")}},
+    {"Sets","Tree","Merge","Merge","Merge multiple data streams",{PSpec("Data 1","D1"),PSpec("Data 2","D2")},{PSpec("Result","R")}},
+    {"Sets","Tree","Flip Matrix","Flip","Flip matrix-like data tree",{PSpec("Data","D")},{PSpec("Data","D")}},
+    {"Sets","Tree","Flatten Tree","Flatten","Flatten data tree to single branch",{PSpec("Tree","T")},{PSpec("Tree","T")}},
+    {"Sets","Tree","Graft Tree","Graft","Graft each item into its own branch",{PSpec("Tree","T")},{PSpec("Tree","T")}},
+    {"Sets","Tree","Simplify Tree","Simplify","Remove shared leading path zeros",{PSpec("Tree","T")},{PSpec("Tree","T")}},
+    {"Sets","Tree","Clean Tree","Clean","Remove nulls and invalid items",{PSpec("Tree","T")},{PSpec("Tree","T")}},
+    {"Sets","Text","Format","Fmt","Format numeric values into text",{PSpec("Format","F"),PSpec("Data 0","0")},{PSpec("Text","T")}},
+
+    // ---- 4. Vector (21) ----------------------------------------------------
+    {"Vector","Vector","Unit X","X","Vector along world +X multiplied by factor",{PSpec("Factor","F")},{PSpec("Unit vector","V")}},
+    {"Vector","Vector","Unit Y","Y","Vector along world +Y multiplied by factor",{PSpec("Factor","F")},{PSpec("Unit vector","V")}},
+    {"Vector","Vector","Unit Z","Z","Vector along world +Z multiplied by factor",{PSpec("Factor","F")},{PSpec("Unit vector","V")}},
+    {"Vector","Vector","Vector XYZ","Vec","Construct vector from X, Y, Z components",{PSpec("X component","X"),PSpec("Y component","Y"),PSpec("Z component","Z")},{PSpec("Vector","V"),PSpec("Length","L")}},
+    {"Vector","Vector","Deconstruct Vector","DeVec","Extract X, Y, Z components of vector",{PSpec("Vector","V")},{PSpec("X","X"),PSpec("Y","Y"),PSpec("Z","Z")}},
+    {"Vector","Vector","Vector Length","VLen","Compute Euclidean norm of vector",{PSpec("Vector","V")},{PSpec("Length","L")}},
+    {"Vector","Vector","Unit Vector","Unit","Normalize vector to length 1",{PSpec("Vector","V")},{PSpec("Vector","V")}},
+    {"Vector","Vector","Amplitude","Amp","Set vector amplitude (length)",{PSpec("Vector","V"),PSpec("Amplitude","A")},{PSpec("Vector","V")}},
+    {"Vector","Vector","Reverse","Rev","Reverse vector direction -V",{PSpec("Vector","V")},{PSpec("Vector","V")}},
+    {"Vector","Vector","Angle","Ang","Angle in radians between two vectors",{PSpec("Vector A","A"),PSpec("Vector B","B")},{PSpec("Angle","A"),PSpec("Reflex","R")}},
+    {"Vector","Vector","Cross Product","Cross","Vector cross product A x B",{PSpec("Vector A","A"),PSpec("Vector B","B"),PSpec("Unitize","U")},{PSpec("Vector","V"),PSpec("Length","L")}},
+    {"Vector","Vector","Dot Product","Dot","Vector dot product A . B",{PSpec("Vector A","A"),PSpec("Vector B","B"),PSpec("Unitize","U")},{PSpec("Dot product","D")}},
+    {"Vector","Point","Construct Point","Pt","Construct point from X, Y, Z",{PSpec("X coordinate","X"),PSpec("Y coordinate","Y"),PSpec("Z coordinate","Z")},{PSpec("Point","Pt")}},
+    {"Vector","Point","Deconstruct","pDecon","Deconstruct point into X, Y, Z",{PSpec("Point","P")},{PSpec("X","X"),PSpec("Y","Y"),PSpec("Z","Z")}},
+    {"Vector","Point","Distance","Dist","Euclidean distance between two points",{PSpec("Point A","A"),PSpec("Point B","B")},{PSpec("Distance","D")}},
+    {"Vector","Point","Midpoint","Mid","Midpoint between two points",{PSpec("Point A","A"),PSpec("Point B","B")},{PSpec("Midpoint","M")}},
+    {"Vector","Plane","XY Plane","XY","World XY construction plane at origin",{PSpec("Origin","O")},{PSpec("Plane","P")}},
+    {"Vector","Plane","XZ Plane","XZ","World XZ construction plane at origin",{PSpec("Origin","O")},{PSpec("Plane","P")}},
+    {"Vector","Plane","YZ Plane","YZ","World YZ construction plane at origin",{PSpec("Origin","O")},{PSpec("Plane","P")}},
+    {"Vector","Plane","Construct Plane","Pln","Construct plane from Origin, XAxis, YAxis",{PSpec("Origin","O"),PSpec("X-Axis","X"),PSpec("Y-Axis","Y")},{PSpec("Plane","P")}},
+    {"Vector","Plane","Plane Normal","PlnN","Construct plane from Origin and Z normal",{PSpec("Origin","O"),PSpec("Z-Axis","Z")},{PSpec("Plane","P")}},
+    {"Vector","Plane","Plane 3Pt","Pln3Pt","Construct plane through three points",{PSpec("Origin","A"),PSpec("Point X","B"),PSpec("Point Y","C")},{PSpec("Plane","P")}},
+    {"Vector","Plane","Plane Offset","PlnOff","Offset plane along its Z normal",{PSpec("Base Plane","P"),PSpec("Offset","O")},{PSpec("Plane","P")}},
+    {"Vector","Grid","Hexagonal","HexGrid","2D hexagonal honeycomb grid",{PSpec("Plane","P"),PSpec("Size","S"),PSpec("Extent X","Ex"),PSpec("Extent Y","Ey")},{PSpec("Cells","C"),PSpec("Points","P")}},
+    {"Vector","Grid","Square","SqGrid","2D square cell grid",{PSpec("Plane","P"),PSpec("Size","S"),PSpec("Extent X","Ex"),PSpec("Extent Y","Ey")},{PSpec("Cells","C"),PSpec("Points","P")}},
+    {"Vector","Grid","Rectangular","RecGrid","2D rectangular cell grid",{PSpec("Plane","P"),PSpec("Size X","Sx"),PSpec("Size Y","Sy"),PSpec("Extent X","Ex"),PSpec("Extent Y","Ey")},{PSpec("Cells","C"),PSpec("Points","P")}},
+    {"Vector","Grid","Populate 2D","Pop2D","Populate 2D rectangle with points",{PSpec("Region","R"),PSpec("Count","N"),PSpec("Seed","S")},{PSpec("Population","P")}},
+    {"Vector","Grid","Poisson Distribution","Poisson","Poisson disk sampling inside circle",{PSpec("Region","Rg"),PSpec("Radius","R"),PSpec("Random","Rn")},{PSpec("Points","P")}},
+
+    // ---- 5. Curve (22) -----------------------------------------------------
+    {"Curve","Primitive","Line","Ln","Line between two points",{PSpec("Start Point","A"),PSpec("End Point","B")},{PSpec("Line","L")}},
+    {"Curve","Primitive","Line SDL","Line SDL","Line from start, tangent and length",{PSpec("Start","S"),PSpec("Direction","D"),PSpec("Length","L")},{PSpec("Line","L")}},
+    {"Curve","Primitive","Circle","Cir","Circle from plane and radius",{PSpec("Plane","P"),PSpec("Radius","R")},{PSpec("Circle","C")}},
+    {"Curve","Primitive","Circle CNR","CirCNR","Circle from center, normal and radius",{PSpec("Center","C"),PSpec("Normal","N"),PSpec("Radius","R")},{PSpec("Circle","C")}},
+    {"Curve","Primitive","Circle 3Pt","Cir3Pt","Circle through three points",{PSpec("Point A","A"),PSpec("Point B","B"),PSpec("Point C","C")},{PSpec("Circle","C"),PSpec("Plane","P"),PSpec("Radius","R")}},
+    {"Curve","Primitive","Arc","Arc","Arc from plane, radius and angle",{PSpec("Plane","P"),PSpec("Radius","R"),PSpec("Angle","A")},{PSpec("Arc","A"),PSpec("Length","L")}},
+    {"Curve","Primitive","Arc SED","Arc SED","Arc from start, end and start direction",{PSpec("Start","S"),PSpec("End","E"),PSpec("Direction","D")},{PSpec("Arc","A"),PSpec("Plane","P"),PSpec("Radius","R")}},
+    {"Curve","Primitive","Arc 3Pt","Arc3Pt","Arc through three points",{PSpec("Point A","A"),PSpec("Point B","B"),PSpec("Point C","C")},{PSpec("Arc","A"),PSpec("Plane","P"),PSpec("Radius","R")}},
+    {"Curve","Primitive","Polygon","Poly","Regular N-sided polygon in plane",{PSpec("Plane","P"),PSpec("Radius","R"),PSpec("Segments","S")},{PSpec("Polygon","P"),PSpec("Length","L")}},
+    {"Curve","Primitive","Rectangle","Rec","Rectangle in plane from X/Y intervals",{PSpec("Plane","P"),PSpec("X Size","X"),PSpec("Y Size","Y")},{PSpec("Rectangle","R"),PSpec("Length","L")}},
+    {"Curve","Spline","Nurbs Curve","Nurbs","NURBS curve from control vertices",{PSpec("Vertices","V"),PSpec("Degree","D"),PSpec("Periodic","P")},{PSpec("Curve","C"),PSpec("Length","L"),PSpec("Domain","D")}},
+    {"Curve","Spline","Interpolate","IntCrv","Interpolated curve through points",{PSpec("Vertices","V"),PSpec("Degree","D"),PSpec("Periodic","P")},{PSpec("Curve","C"),PSpec("Length","L"),PSpec("Domain","D")}},
+    {"Curve","Spline","Interpolate data","Interp","Interpolate dataset values at parameters",{PSpec("Data","D"),PSpec("Parameter","t")},{PSpec("Value","V")}},
+    {"Curve","Spline","Polyline","PLine","Polyline through points",{PSpec("Vertices","V"),PSpec("Closed","C")},{PSpec("Polyline","Pl")}},
+    {"Curve","Division","Divide Curve","Divide","Divide curve into N equal segments",{PSpec("Curve","C"),PSpec("Count","N"),PSpec("Kinks","K")},{PSpec("Points","P"),PSpec("Tangents","T"),PSpec("Parameters","t")}},
+    {"Curve","Division","Divide Length","DivLen","Divide curve by segment arc length",{PSpec("Curve","C"),PSpec("Length","L")},{PSpec("Points","P"),PSpec("Tangents","T"),PSpec("Parameters","t")}},
+    {"Curve","Analysis","Evaluate Curve","Eval","Evaluate point and tangent on curve at t",{PSpec("Curve","C"),PSpec("Parameter","t")},{PSpec("Point","P"),PSpec("Tangent","T"),PSpec("Angle","A")}},
+    {"Curve","Analysis","Curve Closest Point","Crv CP","Project point onto closest curve point",{PSpec("Point","P"),PSpec("Curve","C")},{PSpec("Point","P"),PSpec("Parameter","t"),PSpec("Distance","D")}},
+    {"Curve","Analysis","Curve Middle","Mid","Midpoint of a curve",{PSpec("Curve","C")},{PSpec("Midpoint","M")}},
+    {"Curve","Analysis","End Points","Ends","Start and end points of a curve",{PSpec("Curve","C")},{PSpec("Start","S"),PSpec("End","E")}},
+    {"Curve","Analysis","Curve Length","Len","Measure arc length of a curve",{PSpec("Curve","C")},{PSpec("Length","L")}},
+    {"Curve","Analysis","Curve Domain","Dom","Extract parameter interval of a curve",{PSpec("Curve","C")},{PSpec("Domain","D")}},
+    {"Curve","Analysis","Point In Curve","InCrv","Test point inclusion inside closed planar curve",{PSpec("Point","P"),PSpec("Curve","C"),PSpec("Plane","Pl")},{PSpec("Relationship","R"),PSpec("Point","P")}},
+    {"Curve","Analysis","Control Points","CV","Extract NURBS control polygon vertices",{PSpec("Curve","C")},{PSpec("Points","P"),PSpec("Weights","W")}},
+    {"Curve","Util","Offset Curve","Offset","Offset curve in plane by distance",{PSpec("Curve","C"),PSpec("Distance","D"),PSpec("Plane","P"),PSpec("Corners","C")},{PSpec("Curve","C")}},
+    {"Curve","Util","Join Curves","Join","Join contiguous curve segments",{PSpec("Curves","C"),PSpec("Preserve","P")},{PSpec("Curves","C")}},
+    {"Curve","Util","Flip Curve","Flip","Reverse curve parameterization",{PSpec("Curve","C"),PSpec("Guide","G")},{PSpec("Curve","C"),PSpec("Flipped","F")}},
+
+    // ---- 6. Surface (16) ---------------------------------------------------
+    {"Surface","Primitive","Bounding Box","BBox","Axis-aligned 3D bounding box",{PSpec("Content","C"),PSpec("Plane","P")},{PSpec("Box","B"),PSpec("Box","B")}},
+    {"Surface","Primitive","Center Box","BoxCen","Box centered on plane with X/Y/Z half-sizes",{PSpec("Base","B"),PSpec("X","X"),PSpec("Y","Y"),PSpec("Z","Z")},{PSpec("Box","B")}},
+    {"Surface","Primitive","Box 2Pt","Box2Pt","Box between two corner points",{PSpec("Point A","A"),PSpec("Point B","B")},{PSpec("Box","B")}},
+    {"Surface","Analysis","Box Corners","Corners","Extract all 8 corners of a box",{PSpec("Box","B")},
+      {PSpec("Corner A","A"),PSpec("Corner B","B"),PSpec("Corner C","C"),PSpec("Corner D","D"),
+       PSpec("Corner E","E"),PSpec("Corner F","F"),PSpec("Corner G","G"),PSpec("Corner H","H")}},
+    {"Surface","Analysis","Area","Area","Compute surface/mesh area and centroid",{PSpec("Geometry","G")},{PSpec("Area","A"),PSpec("Centroid","C")}},
+    {"Surface","Analysis","Volume","Vol","Compute closed mesh/Brep volume and centroid",{PSpec("Geometry","G")},{PSpec("Volume","V"),PSpec("Centroid","C")}},
+    {"Surface","Analysis","Evaluate Surface","EvalSrf","Evaluate surface point and normal at UV",{PSpec("Surface","S"),PSpec("uv","uv")},{PSpec("Point","P"),PSpec("Normal","N"),PSpec("Frame","F")}},
+    {"Surface","Analysis","Surface Closest Point","Srf CP","Find closest UV point on surface",{PSpec("Point","P"),PSpec("Surface","S")},{PSpec("Point","P"),PSpec("uv Point","uv"),PSpec("Distance","D")}},
+    {"Surface","Freeform","Extrude","Extr","Extrude curve along vector",{PSpec("Base","B"),PSpec("Direction","D")},{PSpec("Extrusion","E")}},
+    {"Surface","Freeform","Pipe","Pipe","Create tubular surface along rail curve",{PSpec("Curve","C"),PSpec("Radius","R"),PSpec("Caps","E")},{PSpec("Pipe","P")}},
+    {"Surface","Freeform","Loft","Loft","Fit lofted NURBS surface through section curves",{PSpec("Curves","C"),PSpec("Options","O")},{PSpec("Loft","L")}},
+    {"Surface","Freeform","Sweep1","Swp1","One-rail sweep surface",{PSpec("Rail","R"),PSpec("Sections","S")},{PSpec("Brep","S")}},
+    {"Surface","Freeform","Sweep2","Swp2","Two-rail proportional sweep surface",{PSpec("Rail 1","R1"),PSpec("Rail 2","R2"),PSpec("Sections","S")},{PSpec("Brep","S")}},
+    {"Surface","Freeform","Ruled Surface","RuleSrf","Ruled surface between two curves",{PSpec("Curve A","A"),PSpec("Curve B","B")},{PSpec("Surface","S")}},
+    {"Surface","Freeform","4Point Surface","Srf4Pt","Bilinear NURBS patch from 4 corner points",{PSpec("Corner A","A"),PSpec("Corner B","B"),PSpec("Corner C","C"),PSpec("Corner D","D")},{PSpec("Surface","S")}},
+    {"Surface","SubD","SubD Box","SubDBox","Catmull-Clark SubD box from bounding box",{PSpec("Box","B"),PSpec("Density","D")},{PSpec("SubD","S")}},
+    {"Surface","Util","Cap Holes","Cap","Cap open planar boundary loops on mesh",{PSpec("Brep","B")},{PSpec("Brep","B"),PSpec("Valid","V")}},
+
+    // ---- 7. Mesh (8) -------------------------------------------------------
+    {"Mesh","Primitive","Mesh Plane","MPlane","Grid mesh rectangle in plane",{PSpec("Boundary","B"),PSpec("Width count","W"),PSpec("Height count","H")},{PSpec("Mesh","M"),PSpec("Area","A")}},
+    {"Mesh","Primitive","Mesh Box","MBox","Box polygon mesh",{PSpec("Base","B"),PSpec("XCount","X"),PSpec("YCount","Y"),PSpec("ZCount","Z")},{PSpec("Mesh","M")}},
+    {"Mesh","Analysis","Deconstruct Mesh","DeMesh","Extract vertices, faces and normals of mesh",{PSpec("Mesh","M")},{PSpec("Vertices","V"),PSpec("Faces","F"),PSpec("Colours","C"),PSpec("Normals","N")}},
+    {"Mesh","Analysis","Mesh Edges","MEdges","Extract boundary and crease edges of mesh",{PSpec("Mesh","M")},{PSpec("Naked Edges","E1"),PSpec("Interior Edges","E2")}},
+    {"Mesh","Util","Mesh Brep","MBrep","Tessellate NURBS surface/Brep into mesh",{PSpec("Brep","B"),PSpec("Settings","S")},{PSpec("Mesh","M")}},
+    {"Mesh","Util","Mesh Spray","MSpray","Colour mesh vertices from seed points",{PSpec("Mesh","M"),PSpec("Points","P"),PSpec("Colours","C")},{PSpec("Mesh","M")}},
+
+    // ---- 8. Intersect (10) -------------------------------------------------
+    {"Intersect","Mathematical","Line | Line","LLX","Line-line intersection",{PSpec("Line A","A"),PSpec("Line B","B")},{PSpec("Parameter A","tA"),PSpec("Parameter B","tB"),PSpec("Point A","pA"),PSpec("Point B","pB")}},
+    {"Intersect","Mathematical","Line | Plane","PLX","Line-plane intersection",{PSpec("Line","L"),PSpec("Plane","P")},{PSpec("Point","P"),PSpec("Parameter","t")}},
+    {"Intersect","Mathematical","Curve | Plane","CPX","Curve-plane intersection",{PSpec("Curve","C"),PSpec("Plane","P")},{PSpec("Points","P"),PSpec("Params","t")}},
+    {"Intersect","Mathematical","Brep | Plane","Sec","Planar section slice through mesh/Brep",{PSpec("Brep","B"),PSpec("Plane","P")},{PSpec("Curves","C"),PSpec("Points","P")}},
+    {"Intersect","Physical","Curve | Curve","CCX","Curve-curve intersection",{PSpec("Curve A","A"),PSpec("Curve B","B")},{PSpec("Points","P"),PSpec("Params A","tA"),PSpec("Params B","tB")}},
+    {"Intersect","Physical","Curve | Line","CLX","Curve-line intersection",{PSpec("Curve","C"),PSpec("Line","L")},{PSpec("Points","P"),PSpec("Params","t")}},
+    {"Intersect","Physical","Surface | Surface","SSX","Surface-surface intersection curves",{PSpec("Surface A","A"),PSpec("Surface B","B")},{PSpec("Curves","C")}},
+    {"Intersect","Physical","Brep | Line","BLX","Brep/surface and line intersection",{PSpec("Brep","B"),PSpec("Line","L")},{PSpec("Curves","C"),PSpec("Points","P")}},
+    {"Intersect","Shape","Solid Union","SUnion","Boolean union of closed meshes",{PSpec("Breps","B")},{PSpec("Result","R")}},
+    {"Intersect","Shape","Solid Difference","SDiff","Boolean difference A - B",{PSpec("Breps A","A"),PSpec("Breps B","B")},{PSpec("Result","R")}},
+    {"Intersect","Shape","Solid Intersection","SInt","Boolean intersection A & B",{PSpec("Breps A","A"),PSpec("Breps B","B")},{PSpec("Result","R")}},
+
+    // ---- 9. Transform (8) --------------------------------------------------
+    {"Transform","Euclidean","Move","Move","Translate geometry by vector",{PSpec("Geometry","G"),PSpec("Motion","T")},{PSpec("Geometry","G"),PSpec("Transform","X")}},
+    {"Transform","Euclidean","Rotate","Rot","Rotate geometry in plane by angle (radians)",{PSpec("Geometry","G"),PSpec("Angle","A"),PSpec("Plane","P")},{PSpec("Geometry","G"),PSpec("Transform","X")}},
+    {"Transform","Euclidean","Mirror","Mirror","Mirror geometry across plane",{PSpec("Geometry","G"),PSpec("Plane","P")},{PSpec("Geometry","G"),PSpec("Transform","X")}},
+    {"Transform","Euclidean","Orient","Orient","Orient geometry from source to target plane",{PSpec("Geometry","G"),PSpec("Source","A"),PSpec("Target","B")},{PSpec("Geometry","G"),PSpec("Transform","X")}},
+    {"Transform","Affine","Scale","Scale","Uniformly scale geometry around center",{PSpec("Geometry","G"),PSpec("Center","C"),PSpec("Factor","F")},{PSpec("Geometry","G"),PSpec("Transform","X")}},
+    {"Transform","Affine","Project","Proj","Project geometry onto plane",{PSpec("Geometry","G"),PSpec("Plane","P")},{PSpec("Geometry","G"),PSpec("Transform","X")}},
+    {"Transform","Array","Linear Array","ArrLin","Linear array of geometry along direction",{PSpec("Geometry","G"),PSpec("Direction","D"),PSpec("Count","N")},{PSpec("Geometry","G")}},
+    {"Transform","Array","Polar Array","ArrPolar","Circular polar array of geometry",{PSpec("Geometry","G"),PSpec("Plane","P"),PSpec("Count","N"),PSpec("Angle","A")},{PSpec("Geometry","G")}},
+
+    // ---- 10. Display (6) ---------------------------------------------------
+    {"Display","Colour","Colour RGB","RGB","Construct RGBA colour from components",{PSpec("Alpha","A"),PSpec("Red","R"),PSpec("Green","G"),PSpec("Blue","B")},{PSpec("Colour","C")}},
+    {"Display","Colour","Split AHSL","AHSL","Deconstruct colour into Alpha, Hue, Sat, Lum",{PSpec("Colour","C")},{PSpec("Alpha","A"),PSpec("Hue","H"),PSpec("Saturation","S"),PSpec("Luminance","L")}},
+    {"Display","Colour","Gradient","Grad","Evaluate multi-stop colour gradient",{PSpec("Lower limit","L0"),PSpec("Upper limit","L1"),PSpec("Parameter","t")},{PSpec("Colour","C")}},
+    {"Display","Preview","Custom Preview","Preview","Custom shaded preview material",{PSpec("Geometry","G"),PSpec("Material","M")},{}},
+    {"Display","Dimensions","Text Tag 3D","Tag3D","3D text tag in viewport",{PSpec("Location","L"),PSpec("Text","T"),PSpec("Size","S"),PSpec("Colour","C")},{}},
+    {"Display","Graphs","Bar Graph","Bars","Histogram bar graph display",{PSpec("Data","D"),PSpec("Bars","B")},{}},
+    {"Display","Graphs","Quick Graph","QGraph","2D function plotter",{PSpec("Function","F"),PSpec("Data","D")},{}}
+  };
+  return kSpecs;
+}
+
+std::vector<const TL_GhComponentSpec*> TL_GhComponentCatalog::ByCategory(const std::string& category) {
+  std::vector<const TL_GhComponentSpec*> out;
+  for (const auto& s : All()) {
+    if (s.category == category) out.push_back(&s);
+  }
+  return out;
+}
+
+const TL_GhComponentSpec* TL_GhComponentCatalog::Find(const std::string& name_or_nickname) {
+  for (const auto& s : All()) {
+    if (s.name == name_or_nickname || s.nickname == name_or_nickname) return &s;
+  }
+  return nullptr;
+}
+
 // ---------------------------------------------------------------------------
 // TL_GhValue
 // ---------------------------------------------------------------------------
@@ -1550,7 +1791,515 @@ void TL_GhDocument::EvaluateSingleNode(TL_GhNode& node) {
     return;
   }
 
+
+  // --- Extended Maths (Modulus, Power, Trig, Domain, Comparisons, Gates) ---
+  if (nm == "Modulus" || nm == "Mod") {
+    double a = num_in(0, 0.0), b = num_in(1, 1.0);
+    set_all({TL_GhValue::MakeNumber(std::fabs(b) < 1e-15 ? 0.0 : std::fmod(a, b))});
+    return;
+  }
+  if (nm == "Power" || nm == "Pow") {
+    double a = num_in(0, 0.0), b = num_in(1, 1.0);
+    set_all({TL_GhValue::MakeNumber(std::pow(a, b))});
+    return;
+  }
+  if (nm == "Absolute" || nm == "Abs") {
+    std::vector<TL_GhValue> vals;
+    if (!in.empty()) for (const auto& v : in[0]) vals.push_back(TL_GhValue::MakeNumber(std::fabs(v.AsNumber())));
+    if (vals.empty()) vals.push_back(TL_GhValue::MakeNumber(std::fabs(num_in(0, 0.0))));
+    set_all(vals);
+    return;
+  }
+  if (nm == "Negate" || nm == "Neg") {
+    std::vector<TL_GhValue> vals;
+    if (!in.empty()) for (const auto& v : in[0]) vals.push_back(TL_GhValue::MakeNumber(-v.AsNumber()));
+    if (vals.empty()) vals.push_back(TL_GhValue::MakeNumber(-num_in(0, 0.0)));
+    set_all(vals);
+    return;
+  }
+  if (nm == "Factorial" || nm == "Fact") {
+    int n = std::clamp((int)std::lround(num_in(0, 1.0)), 0, 20);
+    double f = 1.0;
+    for (int k = 2; k <= n; ++k) f *= (double)k;
+    set_all({TL_GhValue::MakeNumber(f)});
+    return;
+  }
+  if (nm == "Minimum" || nm == "Min") {
+    set_all({TL_GhValue::MakeNumber(std::min(num_in(0, 0.0), num_in(1, 0.0)))});
+    return;
+  }
+  if (nm == "Maximum" || nm == "Max") {
+    set_all({TL_GhValue::MakeNumber(std::max(num_in(0, 0.0), num_in(1, 0.0)))});
+    return;
+  }
+  if (nm == "Mass Addition" || nm == "MA") {
+    double sum = 0.0;
+    std::vector<TL_GhValue> partials;
+    for (const auto& b : in) for (const auto& v : b) {
+      sum += v.AsNumber(0.0);
+      partials.push_back(TL_GhValue::MakeNumber(sum));
+    }
+    set_out(0, {TL_GhValue::MakeNumber(sum)});
+    set_out(1, partials);
+    node.runtime_data = {TL_GhValue::MakeNumber(sum)};
+    return;
+  }
+  if (nm == "Sine" || nm == "Sin") {
+    std::vector<TL_GhValue> vals;
+    if (!in.empty()) for (const auto& v : in[0]) vals.push_back(TL_GhValue::MakeNumber(std::sin(v.AsNumber())));
+    if (vals.empty()) vals.push_back(TL_GhValue::MakeNumber(std::sin(num_in(0, 0.0))));
+    set_all(vals);
+    return;
+  }
+  if (nm == "Cosine" || nm == "Cos") {
+    std::vector<TL_GhValue> vals;
+    if (!in.empty()) for (const auto& v : in[0]) vals.push_back(TL_GhValue::MakeNumber(std::cos(v.AsNumber())));
+    if (vals.empty()) vals.push_back(TL_GhValue::MakeNumber(std::cos(num_in(0, 0.0))));
+    set_all(vals);
+    return;
+  }
+  if (nm == "Tangent" || nm == "Tan") {
+    std::vector<TL_GhValue> vals;
+    if (!in.empty()) for (const auto& v : in[0]) vals.push_back(TL_GhValue::MakeNumber(std::tan(v.AsNumber())));
+    if (vals.empty()) vals.push_back(TL_GhValue::MakeNumber(std::tan(num_in(0, 0.0))));
+    set_all(vals);
+    return;
+  }
+  if (nm == "Radians" || nm == "Rad") {
+    set_all({TL_GhValue::MakeNumber(num_in(0, 0.0) * (ON_PI / 180.0))});
+    return;
+  }
+  if (nm == "Degrees" || nm == "Deg") {
+    set_all({TL_GhValue::MakeNumber(num_in(0, 0.0) * (180.0 / ON_PI))});
+    return;
+  }
+  if (nm == "Square Root" || nm == "Sqrt") {
+    set_all({TL_GhValue::MakeNumber(std::sqrt(std::max(0.0, num_in(0, 0.0))))});
+    return;
+  }
+  if (nm == "Logarithm" || nm == "Ln") {
+    set_all({TL_GhValue::MakeNumber(std::log(std::max(1e-15, num_in(0, 1.0))))});
+    return;
+  }
+  if (nm == "Construct Domain" || nm == "Dom") {
+    set_all({TL_GhValue::MakeInterval(num_in(0, 0.0), num_in(1, 1.0))});
+    return;
+  }
+  if (nm == "Deconstruct Domain" || nm == "DeDom") {
+    ON_Interval iv(0.0, 1.0);
+    if (!in.empty() && !in[0].empty() && in[0][0].kind == TL_GhValueKind::Interval) iv = in[0][0].interval_val;
+    set_out(0, {TL_GhValue::MakeNumber(iv.m_t[0])});
+    set_out(1, {TL_GhValue::MakeNumber(iv.m_t[1])});
+    node.runtime_data = {TL_GhValue::MakeNumber(iv.m_t[0]), TL_GhValue::MakeNumber(iv.m_t[1])};
+    return;
+  }
+  if (nm == "Includes" || nm == "Inc") {
+    double v = num_in(0, 0.0);
+    ON_Interval iv(0.0, 1.0);
+    if (in.size() > 1 && !in[1].empty() && in[1][0].kind == TL_GhValueKind::Interval) iv = in[1][0].interval_val;
+    bool inc = (v >= iv.Min() && v <= iv.Max());
+    double dist = inc ? 0.0 : (v < iv.Min() ? iv.Min() - v : v - iv.Max());
+    set_out(0, {TL_GhValue::MakeBool(inc)});
+    set_out(1, {TL_GhValue::MakeNumber(dist)});
+    node.runtime_data = {TL_GhValue::MakeBool(inc)};
+    return;
+  }
+  if (nm == "Larger Than" || nm == ">") {
+    double a = num_in(0, 0.0), b = num_in(1, 0.0);
+    set_out(0, {TL_GhValue::MakeBool(a > b)});
+    set_out(1, {TL_GhValue::MakeBool(a >= b)});
+    node.runtime_data = {TL_GhValue::MakeBool(a > b)};
+    return;
+  }
+  if (nm == "Smaller Than" || nm == "<") {
+    double a = num_in(0, 0.0), b = num_in(1, 0.0);
+    set_out(0, {TL_GhValue::MakeBool(a < b)});
+    set_out(1, {TL_GhValue::MakeBool(a <= b)});
+    node.runtime_data = {TL_GhValue::MakeBool(a < b)};
+    return;
+  }
+  if (nm == "Equality" || nm == "=") {
+    double a = num_in(0, 0.0), b = num_in(1, 0.0);
+    bool eq = std::fabs(a - b) <= 1e-9;
+    set_out(0, {TL_GhValue::MakeBool(eq)});
+    set_out(1, {TL_GhValue::MakeBool(!eq)});
+    node.runtime_data = {TL_GhValue::MakeBool(eq)};
+    return;
+  }
+  if (nm == "Gate And" || nm == "And") {
+    bool a = num_in(0, 0.0) != 0.0, b = num_in(1, 0.0) != 0.0;
+    set_all({TL_GhValue::MakeBool(a && b)});
+    return;
+  }
+  if (nm == "Gate Or" || nm == "Or") {
+    bool a = num_in(0, 0.0) != 0.0, b = num_in(1, 0.0) != 0.0;
+    set_all({TL_GhValue::MakeBool(a || b)});
+    return;
+  }
+  if (nm == "Gate Not" || nm == "Not") {
+    bool a = num_in(0, 0.0) != 0.0;
+    set_all({TL_GhValue::MakeBool(!a)});
+    return;
+  }
+
+  // --- Sets & Lists (Series, Random, List Item, Cull, Sort, Weave, etc.) ---
+  if (nm == "Series" || nm == "Ser") {
+    double start = num_in(0, 0.0), step = num_in(1, 1.0);
+    int count = std::clamp((int)std::lround(num_in(2, 10.0)), 0, 10000);
+    std::vector<TL_GhValue> vals;
+    vals.reserve((size_t)count);
+    for (int i = 0; i < count; ++i) vals.push_back(TL_GhValue::MakeNumber(start + (double)i * step));
+    set_all(vals);
+    return;
+  }
+  if (nm == "Random" || nm == "Rnd") {
+    ON_Interval dom(0.0, 1.0);
+    if (!in.empty() && !in[0].empty() && in[0][0].kind == TL_GhValueKind::Interval) dom = in[0][0].interval_val;
+    int count = std::clamp((int)std::lround(num_in(1, 10.0)), 1, 10000);
+    uint32_t seed = (uint32_t)std::lround(num_in(2, 42.0)) * 2654435761u + 1013904223u;
+    std::vector<TL_GhValue> vals;
+    for (int i = 0; i < count; ++i) {
+      seed = seed * 1664525u + 1013904223u;
+      double u = (double)(seed & 0xFFFFFFu) / (double)0x1000000u;
+      vals.push_back(TL_GhValue::MakeNumber(dom.ParameterAt(u)));
+    }
+    set_all(vals);
+    return;
+  }
+  if (nm == "Duplicate Data" || nm == "Dup") {
+    int count = std::clamp((int)std::lround(num_in(1, 2.0)), 0, 1000);
+    std::vector<TL_GhValue> vals;
+    if (!in.empty()) {
+      for (int c = 0; c < count; ++c)
+        for (const auto& v : in[0]) vals.push_back(v);
+    }
+    set_all(vals);
+    return;
+  }
+  if (nm == "List Item" || nm == "Item") {
+    const std::vector<TL_GhValue> list = in.empty() ? std::vector<TL_GhValue>() : in[0];
+    if (list.empty()) { set_all({}); return; }
+    std::vector<int> indices;
+    if (in.size() > 1 && !in[1].empty()) {
+      for (const auto& v : in[1]) indices.push_back((int)std::lround(v.AsNumber(0.0)));
+    } else {
+      indices.push_back(0);
+    }
+    bool wrap = (in.size() > 2 && !in[2].empty()) ? (in[2][0].AsNumber(1.0) != 0.0) : true;
+    const int M = (int)list.size();
+    const int out_ports = std::max(1, (int)node.outputs.size());
+    for (int op = 0; op < out_ports; ++op) {
+      std::vector<TL_GhValue> picked;
+      for (int idx : indices) {
+        int q = idx + op;
+        if (wrap) q = ((q % M) + M) % M;
+        if (q >= 0 && q < M) picked.push_back(list[(size_t)q]);
+      }
+      set_out(op, picked);
+      if (op == 0) node.runtime_data = picked;
+    }
+    return;
+  }
+  if (nm == "List Length" || nm == "Lng") {
+    size_t len = in.empty() ? 0 : in[0].size();
+    set_all({TL_GhValue::MakeNumber((double)len)});
+    return;
+  }
+  if (nm == "Reverse List" || nm == "Rev") {
+    std::vector<TL_GhValue> vals = in.empty() ? std::vector<TL_GhValue>() : in[0];
+    std::reverse(vals.begin(), vals.end());
+    set_all(vals);
+    return;
+  }
+  if (nm == "Shift List" || nm == "Shift") {
+    std::vector<TL_GhValue> list = in.empty() ? std::vector<TL_GhValue>() : in[0];
+    int s_off = (int)std::lround(num_in(1, 1.0));
+    bool wrap = (in.size() > 2 && !in[2].empty()) ? (in[2][0].AsNumber(1.0) != 0.0) : true;
+    std::vector<TL_GhValue> out_v;
+    const int M = (int)list.size();
+    for (int i = 0; i < M; ++i) {
+      int q = i + s_off;
+      if (wrap && M > 0) q = ((q % M) + M) % M;
+      if (q >= 0 && q < M) out_v.push_back(list[(size_t)q]);
+    }
+    set_all(out_v);
+    return;
+  }
+  if (nm == "Split List" || nm == "Split") {
+    std::vector<TL_GhValue> list = in.empty() ? std::vector<TL_GhValue>() : in[0];
+    int idx = std::clamp((int)std::lround(num_in(1, 0.0)), 0, (int)list.size());
+    std::vector<TL_GhValue> a(list.begin(), list.begin() + idx);
+    std::vector<TL_GhValue> b(list.begin() + idx, list.end());
+    set_out(0, a);
+    set_out(1, b);
+    node.runtime_data = a;
+    return;
+  }
+  if (nm == "Cull Pattern" || nm == "CullP") {
+    std::vector<TL_GhValue> list = in.empty() ? std::vector<TL_GhValue>() : in[0];
+    std::vector<bool> pat;
+    if (in.size() > 1) for (const auto& v : in[1]) pat.push_back(v.AsNumber(0.0) != 0.0);
+    if (pat.empty()) pat = {true, false};
+    std::vector<TL_GhValue> out_v;
+    for (size_t i = 0; i < list.size(); ++i) {
+      if (pat[i % pat.size()]) out_v.push_back(list[i]);
+    }
+    set_all(out_v);
+    return;
+  }
+  if (nm == "Cull Index" || nm == "CullI") {
+    std::vector<TL_GhValue> list = in.empty() ? std::vector<TL_GhValue>() : in[0];
+    std::set<int> drop;
+    if (in.size() > 1) for (const auto& v : in[1]) drop.insert((int)std::lround(v.AsNumber(-1.0)));
+    std::vector<TL_GhValue> out_v;
+    for (int i = 0; i < (int)list.size(); ++i) if (!drop.count(i)) out_v.push_back(list[(size_t)i]);
+    set_all(out_v);
+    return;
+  }
+  if (nm == "Cull Nth" || nm == "CullN") {
+    std::vector<TL_GhValue> list = in.empty() ? std::vector<TL_GhValue>() : in[0];
+    int freq = std::max(1, (int)std::lround(num_in(1, 2.0)));
+    std::vector<TL_GhValue> out_v;
+    for (int i = 0; i < (int)list.size(); ++i) if (((i + 1) % freq) != 0) out_v.push_back(list[(size_t)i]);
+    set_all(out_v);
+    return;
+  }
+  if (nm == "Dispatch" || nm == "Disp") {
+    std::vector<TL_GhValue> list = in.empty() ? std::vector<TL_GhValue>() : in[0];
+    std::vector<bool> pat;
+    if (in.size() > 1) for (const auto& v : in[1]) pat.push_back(v.AsNumber(0.0) != 0.0);
+    if (pat.empty()) pat = {true, false};
+    std::vector<TL_GhValue> a, b;
+    for (size_t i = 0; i < list.size(); ++i) {
+      if (pat[i % pat.size()]) a.push_back(list[i]);
+      else b.push_back(list[i]);
+    }
+    set_out(0, a);
+    set_out(1, b);
+    node.runtime_data = a;
+    return;
+  }
+  if (nm == "Sort List" || nm == "Sort") {
+    std::vector<TL_GhValue> keys = in.empty() ? std::vector<TL_GhValue>() : in[0];
+    std::vector<TL_GhValue> vals = (in.size() > 1) ? in[1] : std::vector<TL_GhValue>();
+    std::vector<size_t> order(keys.size());
+    for (size_t i = 0; i < keys.size(); ++i) order[i] = i;
+    std::sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+      return keys[a].AsNumber(0.0) < keys[b].AsNumber(0.0);
+    });
+    std::vector<TL_GhValue> sk, sv;
+    for (size_t idx : order) {
+      sk.push_back(keys[idx]);
+      if (idx < vals.size()) sv.push_back(vals[idx]);
+    }
+    set_out(0, sk);
+    set_out(1, sv);
+    node.runtime_data = sk;
+    return;
+  }
+  if (nm == "Weave") {
+    std::vector<int> pat;
+    if (!in.empty()) for (const auto& v : in[0]) pat.push_back((int)std::lround(v.AsNumber(0.0)));
+    if (pat.empty()) pat = {0, 1};
+    const std::vector<TL_GhValue> s0 = (in.size() > 1) ? in[1] : std::vector<TL_GhValue>();
+    const std::vector<TL_GhValue> s1 = (in.size() > 2) ? in[2] : std::vector<TL_GhValue>();
+    size_t i0 = 0, i1 = 0, step = 0;
+    std::vector<TL_GhValue> out_v;
+    while (i0 < s0.size() || i1 < s1.size()) {
+      int which = pat[step++ % pat.size()];
+      if (which == 0 && i0 < s0.size()) out_v.push_back(s0[i0++]);
+      else if (i1 < s1.size()) out_v.push_back(s1[i1++]);
+      else if (i0 < s0.size()) out_v.push_back(s0[i0++]);
+    }
+    set_all(out_v);
+    return;
+  }
+  if (nm == "Merge" || nm == "Flip Matrix" || nm == "Flatten Tree" ||
+      nm == "Graft Tree" || nm == "Simplify Tree" || nm == "Clean Tree" || nm == "Relay") {
+    std::vector<TL_GhValue> vals;
+    for (const auto& b : in) for (const auto& v : b) {
+      if (v.kind != TL_GhValueKind::Null) vals.push_back(v);
+    }
+    set_all(vals);
+    return;
+  }
+
   // --- Points & vectors ---------------------------------------------------
+  if (nm == "Unit X") {
+    double f = num_in(0, 1.0);
+    set_all({TL_GhValue::MakeVector(ON_3dVector(f, 0.0, 0.0))});
+    return;
+  }
+  if (nm == "Unit Y") {
+    double f = num_in(0, 1.0);
+    set_all({TL_GhValue::MakeVector(ON_3dVector(0.0, f, 0.0))});
+    return;
+  }
+  if (nm == "Unit Z") {
+    double f = num_in(0, 1.0);
+    set_all({TL_GhValue::MakeVector(ON_3dVector(0.0, 0.0, f))});
+    return;
+  }
+  if (nm == "Deconstruct Vector" || nm == "DeVec") {
+    ON_3dVector v = (!in.empty() && !in[0].empty()) ? in[0][0].AsVector() : ON_3dVector::ZeroVector;
+    set_out(0, {TL_GhValue::MakeNumber(v.x)});
+    set_out(1, {TL_GhValue::MakeNumber(v.y)});
+    set_out(2, {TL_GhValue::MakeNumber(v.z)});
+    return;
+  }
+  if (nm == "Vector Length" || nm == "VLen") {
+    ON_3dVector v = (!in.empty() && !in[0].empty()) ? in[0][0].AsVector() : ON_3dVector::ZeroVector;
+    set_all({TL_GhValue::MakeNumber(v.Length())});
+    return;
+  }
+  if (nm == "Unit Vector" || nm == "Unit") {
+    ON_3dVector v = (!in.empty() && !in[0].empty()) ? in[0][0].AsVector() : ON_3dVector::XAxis;
+    v.Unitize();
+    set_all({TL_GhValue::MakeVector(v)});
+    return;
+  }
+  if (nm == "Amplitude" || nm == "Amp") {
+    ON_3dVector v = (!in.empty() && !in[0].empty()) ? in[0][0].AsVector() : ON_3dVector::XAxis;
+    v.Unitize();
+    set_all({TL_GhValue::MakeVector(v * num_in(1, 1.0))});
+    return;
+  }
+  if (nm == "Reverse") {
+    ON_3dVector v = (!in.empty() && !in[0].empty()) ? in[0][0].AsVector() : ON_3dVector::XAxis;
+    set_all({TL_GhValue::MakeVector(-v)});
+    return;
+  }
+  if (nm == "Angle" || nm == "Ang") {
+    ON_3dVector a = (!in.empty() && !in[0].empty()) ? in[0][0].AsVector(ON_3dVector::XAxis) : ON_3dVector::XAxis;
+    ON_3dVector b = (in.size() > 1 && !in[1].empty()) ? in[1][0].AsVector(ON_3dVector::YAxis) : ON_3dVector::YAxis;
+    a.Unitize(); b.Unitize();
+    double ang = std::acos(std::clamp(ON_DotProduct(a, b), -1.0, 1.0));
+    set_out(0, {TL_GhValue::MakeNumber(ang)});
+    set_out(1, {TL_GhValue::MakeNumber(2.0 * ON_PI - ang)});
+    node.runtime_data = {TL_GhValue::MakeNumber(ang)};
+    return;
+  }
+  if (nm == "Cross Product" || nm == "Cross") {
+    ON_3dVector a = (!in.empty() && !in[0].empty()) ? in[0][0].AsVector(ON_3dVector::XAxis) : ON_3dVector::XAxis;
+    ON_3dVector b = (in.size() > 1 && !in[1].empty()) ? in[1][0].AsVector(ON_3dVector::YAxis) : ON_3dVector::YAxis;
+    ON_3dVector c = ON_CrossProduct(a, b);
+    double len = c.Length();
+    if (in.size() > 2 && !in[2].empty() && in[2][0].AsNumber(0.0) != 0.0) c.Unitize();
+    set_out(0, {TL_GhValue::MakeVector(c)});
+    set_out(1, {TL_GhValue::MakeNumber(len)});
+    node.runtime_data = {TL_GhValue::MakeVector(c)};
+    return;
+  }
+  if (nm == "Dot Product" || nm == "Dot") {
+    ON_3dVector a = (!in.empty() && !in[0].empty()) ? in[0][0].AsVector(ON_3dVector::XAxis) : ON_3dVector::XAxis;
+    ON_3dVector b = (in.size() > 1 && !in[1].empty()) ? in[1][0].AsVector(ON_3dVector::YAxis) : ON_3dVector::YAxis;
+    if (in.size() > 2 && !in[2].empty() && in[2][0].AsNumber(0.0) != 0.0) { a.Unitize(); b.Unitize(); }
+    set_all({TL_GhValue::MakeNumber(ON_DotProduct(a, b))});
+    return;
+  }
+  if (nm == "Midpoint" || nm == "Mid") {
+    ON_3dPoint a = pt_in(0, ON_3dPoint::Origin), b = pt_in(1, ON_3dPoint::Origin);
+    set_all({TL_GhValue::MakePoint((a + b) * 0.5)});
+    return;
+  }
+  if (nm == "XZ Plane") {
+    ON_3dPoint o = pt_in(0, ON_3dPoint::Origin);
+    set_all({TL_GhValue::MakePlane(ON_Plane(o, ON_3dVector::XAxis, ON_3dVector::ZAxis))});
+    return;
+  }
+  if (nm == "YZ Plane") {
+    ON_3dPoint o = pt_in(0, ON_3dPoint::Origin);
+    set_all({TL_GhValue::MakePlane(ON_Plane(o, ON_3dVector::YAxis, ON_3dVector::ZAxis))});
+    return;
+  }
+  if (nm == "Construct Plane" || nm == "Pln") {
+    ON_3dPoint o = pt_in(0, ON_3dPoint::Origin);
+    ON_3dVector x = (in.size() > 1 && !in[1].empty()) ? in[1][0].AsVector(ON_3dVector::XAxis) : ON_3dVector::XAxis;
+    ON_3dVector y = (in.size() > 2 && !in[2].empty()) ? in[2][0].AsVector(ON_3dVector::YAxis) : ON_3dVector::YAxis;
+    set_all({TL_GhValue::MakePlane(ON_Plane(o, x, y))});
+    return;
+  }
+  if (nm == "Plane Normal" || nm == "PlnN") {
+    ON_3dPoint o = pt_in(0, ON_3dPoint::Origin);
+    ON_3dVector z = (in.size() > 1 && !in[1].empty()) ? in[1][0].AsVector(ON_3dVector::ZAxis) : ON_3dVector::ZAxis;
+    set_all({TL_GhValue::MakePlane(ON_Plane(o, z))});
+    return;
+  }
+  if (nm == "Plane 3Pt" || nm == "Pln3Pt") {
+    ON_3dPoint a = pt_in(0, ON_3dPoint::Origin);
+    ON_3dPoint b = pt_in(1, ON_3dPoint(1, 0, 0));
+    ON_3dPoint c = pt_in(2, ON_3dPoint(0, 1, 0));
+    set_all({TL_GhValue::MakePlane(ON_Plane(a, b, c))});
+    return;
+  }
+  if (nm == "Hexagonal" || nm == "HexGrid") {
+    ON_Plane pl = ON_Plane::World_xy;
+    if (!in.empty() && !in[0].empty() && in[0][0].kind == TL_GhValueKind::Plane) pl = in[0][0].plane_val;
+    double R = std::max(1e-3, num_in(1, 1.0));
+    int ex = std::clamp((int)std::lround(num_in(2, 5.0)), 1, 60);
+    int ey = std::clamp((int)std::lround(num_in(3, 5.0)), 1, 60);
+    const double dx = 1.5 * R;
+    const double dy = std::sqrt(3.0) * R;
+    std::vector<TL_GhValue> cells, centers;
+    for (int ix = 0; ix < ex; ++ix) {
+      for (int iy = 0; iy < ey; ++iy) {
+        double cx = (double)ix * dx;
+        double cy = ((double)iy + 0.5 * (ix & 1)) * dy;
+        ON_3dPoint cen = pl.PointAt(cx, cy);
+        centers.push_back(TL_GhValue::MakePoint(cen));
+        std::vector<ON_3dPoint> hex;
+        for (int k = 0; k <= 6; ++k) {
+          double a = (double)(k % 6) * (ON_PI / 3.0);
+          hex.push_back(pl.PointAt(cx + R * std::cos(a), cy + R * std::sin(a)));
+        }
+        if (auto c = NurbsThrough(hex, 1)) cells.push_back(TL_GhValue::MakeCurve(*c));
+      }
+    }
+    set_out(0, cells);
+    set_out(1, centers);
+    node.runtime_data = cells;
+    return;
+  }
+  if (nm == "Square" || nm == "SqGrid" || nm == "Rectangular" || nm == "RecGrid") {
+    ON_Plane pl = ON_Plane::World_xy;
+    if (!in.empty() && !in[0].empty() && in[0][0].kind == TL_GhValueKind::Plane) pl = in[0][0].plane_val;
+    bool is_rect = (nm == "Rectangular" || nm == "RecGrid");
+    double sx = std::max(1e-3, num_in(1, 1.0));
+    double sy = is_rect ? std::max(1e-3, num_in(2, 1.0)) : sx;
+    int ex = std::clamp((int)std::lround(num_in(is_rect ? 3 : 2, 5.0)), 1, 60);
+    int ey = std::clamp((int)std::lround(num_in(is_rect ? 4 : 3, 5.0)), 1, 60);
+    std::vector<TL_GhValue> cells, pts;
+    for (int ix = 0; ix < ex; ++ix) {
+      for (int iy = 0; iy < ey; ++iy) {
+        double x0 = ix * sx, y0 = iy * sy;
+        pts.push_back(TL_GhValue::MakePoint(pl.PointAt(x0, y0)));
+        std::vector<ON_3dPoint> loop = {
+          pl.PointAt(x0, y0), pl.PointAt(x0 + sx, y0),
+          pl.PointAt(x0 + sx, y0 + sy), pl.PointAt(x0, y0 + sy), pl.PointAt(x0, y0)
+        };
+        if (auto c = NurbsThrough(loop, 1)) cells.push_back(TL_GhValue::MakeCurve(*c));
+      }
+    }
+    set_out(0, cells);
+    set_out(1, pts);
+    node.runtime_data = cells;
+    return;
+  }
+  if (nm == "Populate 2D" || nm == "Pop2D") {
+    int count = std::clamp((int)std::lround(num_in(1, 25.0)), 1, 1000);
+    uint32_t seed = (uint32_t)std::lround(num_in(2, 1.0)) * 747796405u + 2891336453u;
+    std::vector<TL_GhValue> pts;
+    for (int i = 0; i < count; ++i) {
+      seed = seed * 1664525u + 1013904223u;
+      double ux = (double)(seed & 0xFFFFu) / 65536.0;
+      seed = seed * 1664525u + 1013904223u;
+      double uy = (double)(seed & 0xFFFFu) / 65536.0;
+      pts.push_back(TL_GhValue::MakePoint(ON_3dPoint(ux * 10.0, uy * 10.0, 0.0)));
+    }
+    set_all(pts);
+    return;
+  }
+
   if (nm == "Construct Point" || nm == "Pt") {
     double x = num_in(0, 0.0), y = num_in(1, 0.0), z = num_in(2, 0.0);
     set_all({TL_GhValue::MakePoint(ON_3dPoint(x, y, z))});
@@ -1657,32 +2406,294 @@ void TL_GhDocument::EvaluateSingleNode(TL_GhNode& node) {
     set_all(out_vals);
     return;
   }
+  if (nm == "Circle CNR" || nm == "CirCNR") {
+    ON_3dPoint c = pt_in(0, ON_3dPoint::Origin);
+    ON_3dVector n = (in.size() > 1 && !in[1].empty()) ? in[1][0].AsVector(ON_3dVector::ZAxis) : ON_3dVector::ZAxis;
+    double r = std::max(1e-6, std::fabs(num_in(2, 1.0)));
+    set_all({TL_GhValue::MakeCircle(ON_Circle(ON_Plane(c, n), r))});
+    return;
+  }
   if (nm == "Circle 3Pt" || nm == "Circle 3 Point") {
     std::vector<ON_3dPoint> pts;
-    for (size_t i = 0; i < 3; ++i) pts.push_back(pt_in(i, ON_3dPoint::Origin));
+    for (size_t i = 0; i < 3; ++i) pts.push_back(pt_in(i, ON_3dPoint((double)i, (double)(i == 1), 0.0)));
     ON_Circle ci;
-    if (CircumCircle(pts[0], pts[1], pts[2], ci)) set_all({TL_GhValue::MakeCircle(ci)});
+    if (CircumCircle(pts[0], pts[1], pts[2], ci)) {
+      set_out(0, {TL_GhValue::MakeCircle(ci)});
+      set_out(1, {TL_GhValue::MakePlane(ci.plane)});
+      set_out(2, {TL_GhValue::MakeNumber(ci.radius)});
+      node.runtime_data = {TL_GhValue::MakeCircle(ci)};
+    }
     return;
   }
-  if (nm == "Arc" || nm == "Arc SED" || nm == "Arc 3Pt") {
+  if (nm == "Arc SED") {
+    std::vector<ON_3dPoint> starts = list_pts(0);
+    std::vector<ON_3dPoint> ends = list_pts(1);
+    if (starts.empty()) starts.push_back(pt_in(0, ON_3dPoint::Origin));
+    if (ends.empty()) ends.push_back(pt_in(1, ON_3dPoint(2.0, 0.0, 0.0)));
+    ON_3dVector dir = (in.size() > 2 && !in[2].empty()) ? in[2][0].AsVector(ON_3dVector::ZAxis) : ON_3dVector::ZAxis;
+    if (!dir.Unitize()) dir = ON_3dVector::ZAxis;
+    size_t count = std::max(starts.size(), ends.size());
+    std::vector<TL_GhValue> arcs, planes, radii;
+    for (size_t i = 0; i < count; ++i) {
+      const ON_3dPoint& ps = starts[std::min(i, starts.size() - 1)];
+      const ON_3dPoint& pe = ends[std::min(i, ends.size() - 1)];
+      double chord = (pe - ps).Length();
+      if (chord < 1e-6) continue;
+      ON_3dPoint pm = (ps + pe) * 0.5 + dir * (chord * 0.5);
+      ON_Arc a(ps, pm, pe);
+      if (a.IsValid()) {
+        arcs.push_back(TL_GhValue::MakeArc(a));
+        planes.push_back(TL_GhValue::MakePlane(a.plane));
+        radii.push_back(TL_GhValue::MakeNumber(a.radius));
+      }
+    }
+    set_out(0, arcs);
+    set_out(1, planes);
+    set_out(2, radii);
+    node.runtime_data = arcs;
+    return;
+  }
+  if (nm == "Arc" || nm == "Arc 3Pt") {
+    if (nm == "Arc" && !in.empty() && !in[0].empty() && in[0][0].kind == TL_GhValueKind::Plane) {
+      ON_Plane pl = in[0][0].plane_val;
+      double r = std::max(1e-6, std::fabs(num_in(1, 1.0)));
+      double ang = num_in(2, ON_PI);
+      ON_Arc a(pl, r, ang);
+      if (a.IsValid()) {
+        set_out(0, {TL_GhValue::MakeArc(a)});
+        set_out(1, {TL_GhValue::MakeNumber(a.Length())});
+        node.runtime_data = {TL_GhValue::MakeArc(a)};
+      }
+      return;
+    }
     std::vector<ON_3dPoint> pts;
-    for (size_t i = 0; i < 3; ++i) pts.push_back(pt_in(i, ON_3dPoint(i, 0, 0)));
+    for (size_t i = 0; i < 3; ++i) pts.push_back(pt_in(i, ON_3dPoint((double)i, (double)(i == 1), 0.0)));
     ON_Arc a(pts[0], pts[1], pts[2]);
-    if (a.IsValid()) set_all({TL_GhValue::MakeArc(a)});
+    if (a.IsValid()) {
+      set_out(0, {TL_GhValue::MakeArc(a)});
+      set_out(1, {TL_GhValue::MakePlane(a.plane)});
+      set_out(2, {TL_GhValue::MakeNumber(a.radius)});
+      node.runtime_data = {TL_GhValue::MakeArc(a)};
+    }
     return;
   }
-  if (nm == "Nurbs Curve" || nm == "Interpolate data" || nm == "Interpolate" ||
-      nm == "Polyline" || nm == "Curve") {
+  if (nm == "Polygon" || nm == "Poly") {
+    ON_Plane pl = ON_Plane::World_xy;
+    if (!in.empty() && !in[0].empty() && in[0][0].kind == TL_GhValueKind::Plane) pl = in[0][0].plane_val;
+    double r = std::max(1e-4, num_in(1, 5.0));
+    int segs = std::clamp((int)std::lround(num_in(2, 6.0)), 3, 256);
+    std::vector<ON_3dPoint> pts;
+    for (int i = 0; i <= segs; ++i) {
+      double a = 2.0 * ON_PI * (double)(i % segs) / (double)segs;
+      pts.push_back(pl.PointAt(r * std::cos(a), r * std::sin(a)));
+    }
+    if (auto c = NurbsThrough(pts, 1)) {
+      set_out(0, {TL_GhValue::MakeCurve(*c)});
+      set_out(1, {TL_GhValue::MakeNumber(CurveLengthApprox(*c))});
+      node.runtime_data = {TL_GhValue::MakeCurve(*c)};
+    }
+    return;
+  }
+  if (nm == "Rectangle" || nm == "Rec") {
+    ON_Plane pl = ON_Plane::World_xy;
+    if (!in.empty() && !in[0].empty() && in[0][0].kind == TL_GhValueKind::Plane) pl = in[0][0].plane_val;
+    double sx = num_in(1, 4.0), sy = num_in(2, 2.0);
+    std::vector<ON_3dPoint> pts = {
+      pl.PointAt(0.0, 0.0), pl.PointAt(sx, 0.0), pl.PointAt(sx, sy), pl.PointAt(0.0, sy), pl.PointAt(0.0, 0.0)
+    };
+    if (auto c = NurbsThrough(pts, 1)) {
+      set_out(0, {TL_GhValue::MakeCurve(*c)});
+      set_out(1, {TL_GhValue::MakeNumber(2.0 * (std::fabs(sx) + std::fabs(sy)))});
+      node.runtime_data = {TL_GhValue::MakeCurve(*c)};
+    }
+    return;
+  }
+  if (nm == "Interpolate data" || nm == "Interp") {
+    std::vector<ON_3dPoint> pts = list_pts(0);
+    if (pts.size() >= 2) {
+      auto c = NurbsThrough(pts, 3);
+      if (c && in.size() > 1 && !in[1].empty() && in[1].size() > 1) {
+        ON_Interval dom = c->Domain();
+        std::vector<TL_GhValue> sampled;
+        for (const auto& tv : in[1]) {
+          double u = std::clamp(tv.AsNumber(0.0), 0.0, 1.0);
+          sampled.push_back(TL_GhValue::MakePoint(c->PointAt(dom.ParameterAt(u))));
+        }
+        set_all(sampled);
+        return;
+      }
+      if (c) { set_all({TL_GhValue::MakeCurve(*c)}); return; }
+    }
+    // Numeric dataset interpolation
+    if (!in.empty() && in[0].size() >= 2) {
+      std::vector<double> data;
+      for (const auto& v : in[0]) data.push_back(v.AsNumber(0.0));
+      std::vector<TL_GhValue> out_v;
+      if (in.size() > 1 && !in[1].empty()) {
+        for (const auto& tv : in[1]) {
+          double u = std::clamp(tv.AsNumber(0.0), 0.0, 1.0) * (double)(data.size() - 1);
+          size_t idx = std::min((size_t)std::floor(u), data.size() - 2);
+          double f = u - (double)idx;
+          out_v.push_back(TL_GhValue::MakeNumber(data[idx] * (1.0 - f) + data[idx + 1] * f));
+        }
+      }
+      set_all(out_v);
+      return;
+    }
+    set_all({});
+    return;
+  }
+  if (nm == "Nurbs Curve" || nm == "Interpolate" || nm == "Polyline" || nm == "Curve") {
     std::vector<ON_3dPoint> pts = list_pts(0);
     if (pts.size() < 2) { set_all({}); return; }
-    int deg = 3;
-    if (nm == "Nurbs Curve") deg = (int)std::lround(num_in(1, 3.0));
-    else if (nm == "Interpolate data" || nm == "Interpolate") deg = (int)std::lround(num_in(1, 3.0));
-    else if (nm == "Polyline") deg = 1;
+    int deg = (nm == "Polyline") ? 1 : (int)std::lround(num_in(1, 3.0));
+    if (nm == "Polyline" && in.size() > 1 && !in[1].empty() && in[1][0].AsNumber(0.0) != 0.0) {
+      if ((pts.front() - pts.back()).Length() > 1e-6) pts.push_back(pts.front());
+    }
     auto c = NurbsThrough(pts, deg);
-    if (c) set_all({TL_GhValue::MakeCurve(*c)});
+    if (c) {
+      double len = CurveLengthApprox(*c);
+      ON_Interval dom = c->Domain();
+      set_out(0, {TL_GhValue::MakeCurve(*c)});
+      set_out(1, {TL_GhValue::MakeNumber(len)});
+      set_out(2, {TL_GhValue::MakeInterval(dom.Min(), dom.Max())});
+      node.runtime_data = {TL_GhValue::MakeCurve(*c)};
+    }
     return;
   }
+  if (nm == "Divide Length" || nm == "DivLen") {
+    std::vector<std::shared_ptr<ON_NurbsCurve>> curves = list_curves(0);
+    double seg_len = std::max(1e-3, num_in(1, 2.0));
+    std::vector<TL_GhValue> pts, tans, params;
+    for (const auto& c : curves) {
+      if (!c) continue;
+      double total = CurveLengthApprox(*c);
+      int n = std::clamp((int)std::floor(total / seg_len), 1, 512);
+      ON_Interval dom = c->Domain();
+      for (int i = 0; i <= n; ++i) {
+        double t = dom.ParameterAt((double)i / (double)n);
+        ON_3dPoint pt; ON_3dVector d;
+        if (c->Ev1Der(t, pt, d)) {
+          pts.push_back(TL_GhValue::MakePoint(pt));
+          if (d.Length() > 1e-12) d.Unitize();
+          tans.push_back(TL_GhValue::MakeVector(d));
+          params.push_back(TL_GhValue::MakeNumber(t));
+        }
+      }
+    }
+    set_out(0, pts); set_out(1, tans); set_out(2, params);
+    node.runtime_data = pts;
+    return;
+  }
+  if (nm == "Evaluate Curve" || nm == "Eval") {
+    std::vector<std::shared_ptr<ON_NurbsCurve>> curves = list_curves(0);
+    double t = num_in(1, 0.5);
+    if (!curves.empty() && curves[0]) {
+      ON_3dPoint pt; ON_3dVector tan;
+      if (curves[0]->Ev1Der(t, pt, tan)) {
+        if (tan.Length() > 1e-12) tan.Unitize();
+        set_out(0, {TL_GhValue::MakePoint(pt)});
+        set_out(1, {TL_GhValue::MakeVector(tan)});
+        set_out(2, {TL_GhValue::MakeNumber(0.0)});
+        node.runtime_data = {TL_GhValue::MakePoint(pt)};
+        return;
+      }
+    }
+    set_all({});
+    return;
+  }
+  if (nm == "Curve Middle") {
+    std::vector<std::shared_ptr<ON_NurbsCurve>> curves = list_curves(0);
+    std::vector<TL_GhValue> pts;
+    for (const auto& c : curves) if (c) pts.push_back(TL_GhValue::MakePoint(c->PointAt(c->Domain().Mid())));
+    set_all(pts);
+    return;
+  }
+  if (nm == "End Points" || nm == "Ends") {
+    std::vector<std::shared_ptr<ON_NurbsCurve>> curves = list_curves(0);
+    std::vector<TL_GhValue> s_pts, e_pts;
+    for (const auto& c : curves) if (c) {
+      s_pts.push_back(TL_GhValue::MakePoint(c->PointAtStart()));
+      e_pts.push_back(TL_GhValue::MakePoint(c->PointAtEnd()));
+    }
+    set_out(0, s_pts); set_out(1, e_pts);
+    node.runtime_data = s_pts;
+    return;
+  }
+  if (nm == "Curve Domain") {
+    std::vector<std::shared_ptr<ON_NurbsCurve>> curves = list_curves(0);
+    std::vector<TL_GhValue> doms;
+    for (const auto& c : curves) if (c) doms.push_back(TL_GhValue::MakeInterval(c->Domain().Min(), c->Domain().Max()));
+    set_all(doms);
+    return;
+  }
+  if (nm == "Control Points" || nm == "CV") {
+    std::vector<std::shared_ptr<ON_NurbsCurve>> curves = list_curves(0);
+    std::vector<TL_GhValue> pts, wts;
+    for (const auto& c : curves) if (c) {
+      for (int i = 0; i < c->CVCount(); ++i) {
+        ON_3dPoint cp;
+        if (c->GetCV(i, cp)) pts.push_back(TL_GhValue::MakePoint(cp));
+        wts.push_back(TL_GhValue::MakeNumber(c->Weight(i)));
+      }
+    }
+    set_out(0, pts); set_out(1, wts);
+    node.runtime_data = pts;
+    return;
+  }
+  if (nm == "Point In Curve" || nm == "InCrv") {
+    std::vector<ON_3dPoint> qpts = list_pts(0);
+    if (qpts.empty()) qpts.push_back(pt_in(0, ON_3dPoint::Origin));
+    std::vector<std::shared_ptr<ON_NurbsCurve>> curves = list_curves(1);
+    std::vector<TL_GhValue> rels, out_pts;
+    if (!curves.empty() && curves[0]) {
+      const ON_NurbsCurve& crv = *curves[0];
+      ON_Interval dom = crv.Domain();
+      std::vector<ON_3dPoint> poly;
+      for (int k = 0; k <= 64; ++k) poly.push_back(crv.PointAt(dom.ParameterAt((double)k / 64.0)));
+      for (const ON_3dPoint& p : qpts) {
+        int inside = 0;
+        for (size_t i = 0, j = poly.size() - 1; i < poly.size(); j = i++) {
+          if (((poly[i].y > p.y) != (poly[j].y > p.y)) &&
+              (p.x < (poly[j].x - poly[i].x) * (p.y - poly[i].y) / (poly[j].y - poly[i].y + 1e-30) + poly[i].x))
+            inside = !inside;
+        }
+        rels.push_back(TL_GhValue::MakeNumber(inside ? 2.0 : 0.0));
+        out_pts.push_back(TL_GhValue::MakePoint(p));
+      }
+    }
+    set_out(0, rels); set_out(1, out_pts);
+    node.runtime_data = rels;
+    return;
+  }
+  if (nm == "Join Curves" || nm == "Join") {
+    std::vector<std::shared_ptr<ON_NurbsCurve>> curves = list_curves(0);
+    std::vector<ON_3dPoint> chain;
+    for (const auto& c : curves) {
+      if (!c) continue;
+      ON_Interval dom = c->Domain();
+      for (int k = 0; k <= 16; ++k) {
+        ON_3dPoint pt = c->PointAt(dom.ParameterAt((double)k / 16.0));
+        if (chain.empty() || (pt - chain.back()).Length() > 1e-6) chain.push_back(pt);
+      }
+    }
+    if (auto joined = NurbsThrough(chain, 3)) set_all({TL_GhValue::MakeCurve(*joined)});
+    return;
+  }
+  if (nm == "Flip Curve") {
+    std::vector<std::shared_ptr<ON_NurbsCurve>> curves = list_curves(0);
+    std::vector<TL_GhValue> out_c, fl;
+    for (const auto& c : curves) if (c) {
+      ON_NurbsCurve copy(*c);
+      copy.Reverse();
+      out_c.push_back(TL_GhValue::MakeCurve(copy));
+      fl.push_back(TL_GhValue::MakeBool(true));
+    }
+    set_out(0, out_c); set_out(1, fl);
+    node.runtime_data = out_c;
+    return;
+  }
+
   if (nm == "Divide Curve") {
     std::vector<std::shared_ptr<ON_NurbsCurve>> curves = list_curves(0);
     int n = std::max(1, (int)std::lround(num_in(1, 10.0)));
@@ -1749,15 +2760,111 @@ void TL_GhDocument::EvaluateSingleNode(TL_GhNode& node) {
     if (bb.IsValid()) set_all({TL_GhValue::MakeBox(bb)});
     return;
   }
-  if (nm == "Box Corners") {
+  if (nm == "Center Box" || nm == "BoxCen") {
+    ON_3dPoint c = pt_in(0, ON_3dPoint::Origin);
+    double x = std::fabs(num_in(1, 1.0)), y = std::fabs(num_in(2, 1.0)), z = std::fabs(num_in(3, 1.0));
+    ON_BoundingBox bb(c - ON_3dVector(x, y, z), c + ON_3dVector(x, y, z));
+    set_all({TL_GhValue::MakeBox(bb)});
+    return;
+  }
+  if (nm == "Box 2Pt" || nm == "Box2Pt") {
     ON_BoundingBox bb;
+    bb.Set(pt_in(0, ON_3dPoint::Origin), true);
+    bb.Set(pt_in(1, ON_3dPoint(1, 1, 1)), true);
+    set_all({TL_GhValue::MakeBox(bb)});
+    return;
+  }
+  if (nm == "Box Corners" || nm == "Corners") {
+    ON_BoundingBox bb(ON_3dPoint(-1, -1, 0), ON_3dPoint(1, 1, 1));
     if (!in.empty() && !in[0].empty() && in[0][0].kind == TL_GhValueKind::Box) bb = in[0][0].box_val;
-    std::vector<ON_3dPoint> pts;
     ON_3dPoint corners[8];
-    if (bb.GetCorners(corners)) for (int i = 0; i < 8; ++i) pts.push_back(corners[i]);
-    std::vector<TL_GhValue> vals;
-    for (const auto& p : pts) vals.push_back(TL_GhValue::MakePoint(p));
-    set_all(vals);
+    std::vector<TL_GhValue> all_pts;
+    if (bb.GetCorners(corners)) {
+      for (int i = 0; i < 8; ++i) {
+        TL_GhValue cv = TL_GhValue::MakePoint(corners[i]);
+        all_pts.push_back(cv);
+        set_out(i, {cv});
+      }
+      if (node.outputs.size() == 1) set_out(0, all_pts);
+      node.runtime_data = all_pts;
+    }
+    return;
+  }
+  if (nm == "Extrude" || nm == "Extr") {
+    std::vector<std::shared_ptr<ON_NurbsCurve>> curves = list_curves(0);
+    ON_3dVector dir = (in.size() > 1 && !in[1].empty()) ? in[1][0].AsVector(ON_3dVector(0, 0, 5)) : ON_3dVector(0, 0, 5);
+    std::vector<TL_GhValue> srfs;
+    for (const auto& c : curves) if (c) {
+      ON_NurbsCurve top(*c);
+      top.Translate(dir);
+      ON_SimpleArray<const ON_Curve*> secs;
+      secs.Append(c.get()); secs.Append(&top);
+      if (ON_NurbsSurface* srf = TL_LoftCurves(secs, nullptr)) {
+        srfs.push_back(TL_GhValue::MakeSurface(*srf));
+        delete srf;
+      }
+    }
+    set_all(srfs);
+    return;
+  }
+  if (nm == "Pipe") {
+    std::vector<std::shared_ptr<ON_NurbsCurve>> rails = list_curves(0);
+    double r = std::max(1e-3, std::fabs(num_in(1, 1.0)));
+    ON_Circle cir(ON_Plane::World_xy, r);
+    ON_NurbsCurve prof;
+    cir.GetNurbForm(prof);
+    std::vector<TL_GhValue> pipes;
+    for (const auto& rail : rails) if (rail) {
+      if (ON_NurbsSurface* srf = TL_Sweep1Rail(*rail, prof, 24, nullptr)) {
+        pipes.push_back(TL_GhValue::MakeSurface(*srf));
+        delete srf;
+      }
+    }
+    set_all(pipes);
+    return;
+  }
+  if (nm == "Ruled Surface" || nm == "RuleSrf") {
+    auto c0 = list_curves(0), c1 = list_curves(1);
+    if (!c0.empty() && !c1.empty() && c0[0] && c1[0]) {
+      ON_SimpleArray<const ON_Curve*> secs;
+      secs.Append(c0[0].get()); secs.Append(c1[0].get());
+      if (ON_NurbsSurface* srf = TL_LoftCurves(secs, nullptr)) {
+        set_all({TL_GhValue::MakeSurface(*srf)});
+        delete srf;
+        return;
+      }
+    }
+    set_all({});
+    return;
+  }
+  if (nm == "4Point Surface" || nm == "Srf4Pt") {
+    ON_3dPoint a = pt_in(0, ON_3dPoint(0,0,0)), b = pt_in(1, ON_3dPoint(5,0,0));
+    ON_3dPoint c = pt_in(2, ON_3dPoint(5,5,0)), d = pt_in(3, ON_3dPoint(0,5,0));
+    ON_NurbsSurface srf(3, false, 2, 2, 2, 2);
+    srf.MakeClampedUniformKnotVector(0, 1.0);
+    srf.MakeClampedUniformKnotVector(1, 1.0);
+    srf.SetCV(0, 0, a); srf.SetCV(1, 0, b);
+    srf.SetCV(1, 1, c); srf.SetCV(0, 1, d);
+    set_all({TL_GhValue::MakeSurface(srf)});
+    return;
+  }
+  if (nm == "Area" || nm == "Volume" || nm == "Vol") {
+    double val = 1.0;
+    ON_3dPoint cen = ON_3dPoint::Origin;
+    if (!in.empty() && !in[0].empty()) {
+      const auto& v0 = in[0][0];
+      if (v0.kind == TL_GhValueKind::Mesh && v0.mesh_val) {
+        val = std::fabs(TL_MeshSignedVolume(*v0.mesh_val));
+        cen = v0.mesh_val->BoundingBox().Center();
+      } else if (v0.kind == TL_GhValueKind::Box) {
+        ON_3dVector d = v0.box_val.Diagonal();
+        val = std::fabs(d.x * d.y * (nm == "Area" ? 1.0 : d.z));
+        cen = v0.box_val.Center();
+      }
+    }
+    set_out(0, {TL_GhValue::MakeNumber(val)});
+    set_out(1, {TL_GhValue::MakePoint(cen)});
+    node.runtime_data = {TL_GhValue::MakeNumber(val)};
     return;
   }
 
@@ -1838,6 +2945,253 @@ void TL_GhDocument::EvaluateSingleNode(TL_GhNode& node) {
     return;
   }
 
+  // --- Intersect, Transform & Display batteries ----------------------------
+  if (nm == "Line | Line" || nm == "LLX") {
+    ON_Line la(pt_in(0, ON_3dPoint::Origin), ON_3dPoint(1, 1, 0));
+    ON_Line lb(ON_3dPoint(1, 0, 0), ON_3dPoint(0, 1, 0));
+    if (!in.empty() && !in[0].empty() && in[0][0].kind == TL_GhValueKind::Line) la = in[0][0].line_val;
+    if (in.size() > 1 && !in[1].empty() && in[1][0].kind == TL_GhValueKind::Line) lb = in[1][0].line_val;
+    double ta = 0.0, tb = 0.0;
+    TL_GetClosestPoint(la, lb, &ta, &tb);
+    set_out(0, {TL_GhValue::MakeNumber(ta)});
+    set_out(1, {TL_GhValue::MakeNumber(tb)});
+    set_out(2, {TL_GhValue::MakePoint(la.PointAt(ta))});
+    set_out(3, {TL_GhValue::MakePoint(lb.PointAt(tb))});
+    node.runtime_data = {TL_GhValue::MakePoint(la.PointAt(ta))};
+    return;
+  }
+  if (nm == "Line | Plane" || nm == "PLX") {
+    ON_Line ln(ON_3dPoint(0, 0, -5), ON_3dPoint(0, 0, 5));
+    if (!in.empty() && !in[0].empty() && in[0][0].kind == TL_GhValueKind::Line) ln = in[0][0].line_val;
+    ON_Plane pl = ON_Plane::World_xy;
+    if (in.size() > 1 && !in[1].empty() && in[1][0].kind == TL_GhValueKind::Plane) pl = in[1][0].plane_val;
+    double t = 0.0;
+    if (TL_3DX_LineXPlane(ln.from, ln.Direction(), pl.origin, pl.zaxis, &t) > 0) {
+      ON_3dPoint pt = ln.PointAt(t);
+      set_out(0, {TL_GhValue::MakePoint(pt)});
+      set_out(1, {TL_GhValue::MakeNumber(t)});
+      node.runtime_data = {TL_GhValue::MakePoint(pt)};
+      return;
+    }
+    set_all({});
+    return;
+  }
+  if (nm == "Curve | Plane" || nm == "CPX") {
+    auto crvs = list_curves(0);
+    ON_Plane pl = ON_Plane::World_xy;
+    if (in.size() > 1 && !in[1].empty() && in[1][0].kind == TL_GhValueKind::Plane) pl = in[1][0].plane_val;
+    std::vector<TL_GhValue> pts, ts;
+    for (const auto& c : crvs) if (c) {
+      ON_SimpleArray<double> params;
+      ON_SimpleArray<ON_3dPoint> ipts;
+      if (TL_IntersectCurvePlane(*c, pl, 1e-6, params, ipts) > 0) {
+        for (int i = 0; i < ipts.Count(); ++i) {
+          pts.push_back(TL_GhValue::MakePoint(ipts[i]));
+          ts.push_back(TL_GhValue::MakeNumber(params[i]));
+        }
+      }
+    }
+    set_out(0, pts); set_out(1, ts);
+    node.runtime_data = pts;
+    return;
+  }
+  if (nm == "Curve | Line" || nm == "CLX") {
+    auto crvs = list_curves(0);
+    ON_Line ln(ON_3dPoint(-10, 0, 0), ON_3dPoint(10, 0, 0));
+    if (in.size() > 1 && !in[1].empty() && in[1][0].kind == TL_GhValueKind::Line) ln = in[1][0].line_val;
+    std::vector<TL_GhValue> pts, ts;
+    for (const auto& c : crvs) if (c) {
+      ON_SimpleArray<TL_CurveCurveIntersectionEvent> evs;
+      if (TL_IntersectCurveLine(*c, ln, 1e-6, evs) > 0) {
+        for (int i = 0; i < evs.Count(); ++i) {
+          pts.push_back(TL_GhValue::MakePoint(evs[i].point_a));
+          ts.push_back(TL_GhValue::MakeNumber(evs[i].param_a));
+        }
+      }
+    }
+    set_out(0, pts); set_out(1, ts);
+    node.runtime_data = pts;
+    return;
+  }
+  if (nm == "Curve | Curve" || nm == "CCX") {
+    auto ca = list_curves(0), cb = list_curves(1);
+    std::vector<TL_GhValue> pts, ta, tb;
+    if (!ca.empty() && !cb.empty() && ca[0] && cb[0]) {
+      ON_SimpleArray<TL_CurveCurveIntersectionEvent> evs;
+      if (TL_IntersectCurves(*ca[0], *cb[0], 1e-5, evs) > 0) {
+        for (int i = 0; i < evs.Count(); ++i) {
+          pts.push_back(TL_GhValue::MakePoint(evs[i].point_a));
+          ta.push_back(TL_GhValue::MakeNumber(evs[i].param_a));
+          tb.push_back(TL_GhValue::MakeNumber(evs[i].param_b));
+        }
+      }
+    }
+    set_out(0, pts); set_out(1, ta); set_out(2, tb);
+    node.runtime_data = pts;
+    return;
+  }
+  if (nm == "Brep | Line" || nm == "BLX") {
+    std::vector<ON_Line> lines;
+    if (in.size() > 1) {
+      for (const auto& v : in[1]) if (v.kind == TL_GhValueKind::Line) lines.push_back(v.line_val);
+    }
+    std::vector<TL_GhValue> pts;
+    for (const ON_Line& ln : lines) {
+      pts.push_back(TL_GhValue::MakePoint(ln.PointAt(0.5)));
+    }
+    set_out(0, {});
+    set_out(1, pts);
+    node.runtime_data = pts;
+    return;
+  }
+  if (nm == "Move") {
+    ON_3dVector t = (in.size() > 1 && !in[1].empty()) ? in[1][0].AsVector() : ON_3dVector::ZeroVector;
+    std::vector<TL_GhValue> out_g;
+    if (!in.empty()) for (auto v : in[0]) {
+      if (v.kind == TL_GhValueKind::Point) v.pt_val += t;
+      else if (v.kind == TL_GhValueKind::Line) { v.line_val.from += t; v.line_val.to += t; }
+      else if (v.kind == TL_GhValueKind::Circle) v.circle_val.plane.origin += t;
+      else if (v.kind == TL_GhValueKind::Arc) v.arc_val.plane.origin += t;
+      else if (v.kind == TL_GhValueKind::Plane) v.plane_val.origin += t;
+      else if (v.kind == TL_GhValueKind::Curve && v.curve_val) {
+        auto c = std::make_shared<ON_NurbsCurve>(*v.curve_val);
+        c->Translate(t);
+        v.curve_val = c;
+      }
+      out_g.push_back(v);
+    }
+    set_all(out_g);
+    return;
+  }
+  if (nm == "Rotate" || nm == "Rot") {
+    double ang = num_in(1, 0.0);
+    ON_Plane pl = ON_Plane::World_xy;
+    if (in.size() > 2 && !in[2].empty() && in[2][0].kind == TL_GhValueKind::Plane) pl = in[2][0].plane_val;
+    ON_Xform xf;
+    xf.Rotation(ang, pl.zaxis, pl.origin);
+    std::vector<TL_GhValue> out_g;
+    if (!in.empty()) for (auto v : in[0]) {
+      if (v.kind == TL_GhValueKind::Point) v.pt_val = xf * v.pt_val;
+      else if (v.kind == TL_GhValueKind::Line) { v.line_val.from = xf * v.line_val.from; v.line_val.to = xf * v.line_val.to; }
+      else if (v.kind == TL_GhValueKind::Curve && v.curve_val) {
+        auto c = std::make_shared<ON_NurbsCurve>(*v.curve_val);
+        c->Transform(xf);
+        v.curve_val = c;
+      }
+      out_g.push_back(v);
+    }
+    set_all(out_g);
+    return;
+  }
+  if (nm == "Scale") {
+    ON_3dPoint cen = pt_in(1, ON_3dPoint::Origin);
+    double f = num_in(2, 1.0);
+    std::vector<TL_GhValue> out_g;
+    if (!in.empty()) for (auto v : in[0]) {
+      if (v.kind == TL_GhValueKind::Point) v.pt_val = cen + (v.pt_val - cen) * f;
+      else if (v.kind == TL_GhValueKind::Circle) v.circle_val.radius *= std::fabs(f);
+      else if (v.kind == TL_GhValueKind::Curve && v.curve_val) {
+        auto c = std::make_shared<ON_NurbsCurve>(*v.curve_val);
+        ON_Xform xf = ON_Xform::DiagonalTransformation(f);
+        c->Transform(xf);
+        v.curve_val = c;
+      }
+      out_g.push_back(v);
+    }
+    set_all(out_g);
+    return;
+  }
+  if (nm == "Mirror") {
+    ON_Plane pl = ON_Plane::World_yz;
+    if (in.size() > 1 && !in[1].empty() && in[1][0].kind == TL_GhValueKind::Plane) pl = in[1][0].plane_val;
+    ON_Xform xf;
+    xf.Mirror(pl.origin, pl.zaxis);
+    std::vector<TL_GhValue> out_g;
+    if (!in.empty()) for (auto v : in[0]) {
+      if (v.kind == TL_GhValueKind::Point) v.pt_val = xf * v.pt_val;
+      else if (v.kind == TL_GhValueKind::Line) { v.line_val.from = xf * v.line_val.from; v.line_val.to = xf * v.line_val.to; }
+      else if (v.kind == TL_GhValueKind::Curve && v.curve_val) {
+        auto c = std::make_shared<ON_NurbsCurve>(*v.curve_val);
+        c->Transform(xf);
+        v.curve_val = c;
+      }
+      out_g.push_back(v);
+    }
+    set_all(out_g);
+    return;
+  }
+  if (nm == "Project" || nm == "Proj") {
+    ON_Plane pl = ON_Plane::World_xy;
+    if (in.size() > 1 && !in[1].empty() && in[1][0].kind == TL_GhValueKind::Plane) pl = in[1][0].plane_val;
+    std::vector<TL_GhValue> out_g;
+    if (!in.empty()) for (auto v : in[0]) {
+      if (v.kind == TL_GhValueKind::Point) {
+        v.pt_val = pl.ClosestPointTo(v.pt_val);
+      } else if (v.kind == TL_GhValueKind::Line) {
+        v.line_val.from = pl.ClosestPointTo(v.line_val.from);
+        v.line_val.to = pl.ClosestPointTo(v.line_val.to);
+      } else if (v.kind == TL_GhValueKind::Curve && v.curve_val) {
+        auto c = std::make_shared<ON_NurbsCurve>(*v.curve_val);
+        for (int i = 0; i < c->CVCount(); ++i) {
+          ON_3dPoint cp;
+          if (c->GetCV(i, cp)) c->SetCV(i, pl.ClosestPointTo(cp));
+        }
+        v.curve_val = c;
+      }
+      out_g.push_back(v);
+    }
+    set_all(out_g);
+    return;
+  }
+  if (nm == "Colour RGB" || nm == "RGB") {
+    uint8_t a = (uint8_t)std::clamp((int)std::lround(num_in(0, 255.0)), 0, 255);
+    uint8_t r = (uint8_t)std::clamp((int)std::lround(num_in(1, 203.0)), 0, 255);
+    uint8_t g = (uint8_t)std::clamp((int)std::lround(num_in(2, 166.0)), 0, 255);
+    uint8_t b = (uint8_t)std::clamp((int)std::lround(num_in(3, 247.0)), 0, 255);
+    set_all({TL_GhValue::MakeColor(r, g, b, a)});
+    return;
+  }
+  if (nm == "Split AHSL" || nm == "AHSL") {
+    uint8_t rgba[4] = {203, 166, 247, 255};
+    if (!in.empty() && !in[0].empty() && in[0][0].kind == TL_GhValueKind::Color)
+      std::memcpy(rgba, in[0][0].color_rgba, 4);
+    double r = rgba[0] / 255.0, g = rgba[1] / 255.0, b = rgba[2] / 255.0;
+    double cmax = std::max({r, g, b}), cmin = std::min({r, g, b});
+    double lum = 0.5 * (cmax + cmin);
+    double d = cmax - cmin;
+    double sat = (d < 1e-9) ? 0.0 : d / (1.0 - std::fabs(2.0 * lum - 1.0));
+    double hue = 0.0;
+    if (d > 1e-9) {
+      if (cmax == r) hue = std::fmod((g - b) / d, 6.0);
+      else if (cmax == g) hue = (b - r) / d + 2.0;
+      else hue = (r - g) / d + 4.0;
+      hue /= 6.0;
+      if (hue < 0.0) hue += 1.0;
+    }
+    set_out(0, {TL_GhValue::MakeNumber(rgba[3] / 255.0)});
+    set_out(1, {TL_GhValue::MakeNumber(hue)});
+    set_out(2, {TL_GhValue::MakeNumber(sat)});
+    set_out(3, {TL_GhValue::MakeNumber(lum)});
+    node.runtime_data = {TL_GhValue::MakeNumber(lum)};
+    return;
+  }
+  if (nm == "Gradient" || nm == "Grad") {
+    double l0 = num_in(0, 0.0), l1 = num_in(1, 1.0);
+    std::vector<TL_GhValue> cols;
+    if (in.size() > 2) {
+      for (const auto& v : in[2]) {
+        double u = std::clamp((v.AsNumber(0.0) - l0) / std::max(1e-9, l1 - l0), 0.0, 1.0);
+        uint8_t r = (uint8_t)std::lround(116.0 * (1.0 - u) + 203.0 * u);
+        uint8_t g = (uint8_t)std::lround(199.0 * (1.0 - u) + 166.0 * u);
+        uint8_t b = (uint8_t)std::lround(236.0 * (1.0 - u) + 247.0 * u);
+        cols.push_back(TL_GhValue::MakeColor(r, g, b, 255));
+      }
+    }
+    if (cols.empty()) cols.push_back(TL_GhValue::MakeColor(203, 166, 247, 255));
+    set_all(cols);
+    return;
+  }
+
   // Default: propagate all input values to all outputs so preview chains survive.
   {
     std::vector<TL_GhValue> vals;
@@ -1878,6 +3232,121 @@ bool TL_GhDocument::SetSliderValueByOrdinal(size_t slider_ordinal, double value)
     return Evaluate();
   }
   return false;
+}
+
+
+int TL_GhDocument::AddComponent(const std::string& name_or_nickname, float canvas_x, float canvas_y) {
+  // Prefer the component flavour (most input pins) over a same-named parameter.
+  const TL_GhComponentSpec* spec = nullptr;
+  for (const auto& cand : TL_GhComponentCatalog::All()) {
+    if (cand.name != name_or_nickname && cand.nickname != name_or_nickname) continue;
+    if (!spec || cand.inputs.size() > spec->inputs.size()) spec = &cand;
+  }
+  if (!spec) return -1;
+  if (spec->name == "Number Slider") {
+    return AddSlider(spec->nickname, 0.0, 10.0, 2.0, canvas_x, canvas_y);
+  }
+  TL_GhNode node;
+  node.index = (int)nodes_.size();
+  node.category = spec->category;
+  node.name = spec->name;
+  node.nickname = spec->nickname;
+  node.description = spec->description;
+  node.instance_guid = "ohino_node_" + std::to_string(node.index + 1);
+  node.component_guid = "ohino_comp_" + spec->nickname;
+  node.is_panel = (spec->name == "Panel");
+  node.is_swatch = (spec->name == "Colour Swatch");
+  const size_t max_pins = std::max<size_t>(1, std::max(spec->inputs.size(), spec->outputs.size()));
+  const float w = 72.0f;
+  const float h = std::max(28.0f, 18.0f * (float)max_pins);
+  node.bounds = { canvas_x, canvas_y, w, h };
+  node.pivot_x = canvas_x + w * 0.5f;
+  node.pivot_y = canvas_y + h * 0.5f;
+
+  for (size_t i = 0; i < spec->inputs.size(); ++i) {
+    TL_GhPort p;
+    p.name = spec->inputs[i].name;
+    p.nickname = spec->inputs[i].nickname;
+    p.description = spec->inputs[i].description;
+    p.instance_guid = node.instance_guid + "_in_" + std::to_string(i);
+    p.pivot_x = canvas_x;
+    p.pivot_y = canvas_y + h * ((float)(i + 1) / (float)(spec->inputs.size() + 1));
+    p.bounds = { p.pivot_x, p.pivot_y - 8.0f, 14.0f, 16.0f };
+    node.inputs.push_back(std::move(p));
+  }
+  for (size_t i = 0; i < spec->outputs.size(); ++i) {
+    TL_GhPort p;
+    p.name = spec->outputs[i].name;
+    p.nickname = spec->outputs[i].nickname;
+    p.description = spec->outputs[i].description;
+    p.instance_guid = node.instance_guid + "_out_" + std::to_string(i);
+    p.pivot_x = canvas_x + w;
+    p.pivot_y = canvas_y + h * ((float)(i + 1) / (float)(spec->outputs.size() + 1));
+    p.bounds = { p.pivot_x - 14.0f, p.pivot_y - 8.0f, 14.0f, 16.0f };
+    node.outputs.push_back(std::move(p));
+  }
+  const int idx = node.index;
+  nodes_.push_back(std::move(node));
+  RebuildWiresAndTopology();
+  Evaluate();
+  return idx;
+}
+
+int TL_GhDocument::AddSlider(const std::string& nickname, double min_val, double max_val,
+                             double value, float canvas_x, float canvas_y) {
+  TL_GhNode node;
+  node.index = (int)nodes_.size();
+  node.category = "Params";
+  node.name = "Number Slider";
+  node.nickname = nickname.empty() ? "Slider" : nickname;
+  node.instance_guid = "ohino_slider_" + std::to_string(node.index + 1);
+  node.is_slider = true;
+  node.slider.min_val = min_val;
+  node.slider.max_val = std::max(min_val + 1e-6, max_val);
+  node.slider.value = std::clamp(value, node.slider.min_val, node.slider.max_val);
+  node.bounds = { canvas_x, canvas_y, 140.0f, 22.0f };
+  node.pivot_x = canvas_x + 140.0f;
+  node.pivot_y = canvas_y + 11.0f;
+  node.persistent_data.push_back(TL_GhValue::MakeNumber(node.slider.value));
+  const int idx = node.index;
+  nodes_.push_back(std::move(node));
+  RebuildWiresAndTopology();
+  Evaluate();
+  return idx;
+}
+
+bool TL_GhDocument::Connect(int from_node, int from_output, int to_node, int to_input) {
+  if (from_node < 0 || from_node >= (int)nodes_.size() ||
+      to_node < 0 || to_node >= (int)nodes_.size() || from_node == to_node)
+    return false;
+  TL_GhNode& src = nodes_[(size_t)from_node];
+  TL_GhNode& dst = nodes_[(size_t)to_node];
+  if (to_input < 0 || to_input >= (int)dst.inputs.size()) return false;
+  std::string src_guid = src.instance_guid;
+  if (from_output >= 0 && from_output < (int)src.outputs.size() &&
+      !src.outputs[(size_t)from_output].instance_guid.empty()) {
+    src_guid = src.outputs[(size_t)from_output].instance_guid;
+  }
+  auto& sguids = dst.inputs[(size_t)to_input].source_guids;
+  if (std::find(sguids.begin(), sguids.end(), src_guid) == sguids.end())
+    sguids.push_back(src_guid);
+  RebuildWiresAndTopology();
+  return Evaluate();
+}
+
+bool TL_GhDocument::MoveNode(int node_index, float new_x, float new_y) {
+  if (node_index < 0 || node_index >= (int)nodes_.size()) return false;
+  TL_GhNode& n = nodes_[(size_t)node_index];
+  const float dx = new_x - n.bounds.x;
+  const float dy = new_y - n.bounds.y;
+  n.bounds.x = new_x;
+  n.bounds.y = new_y;
+  n.pivot_x += dx;
+  n.pivot_y += dy;
+  for (auto& p : n.inputs) { p.bounds.x += dx; p.bounds.y += dy; p.pivot_x += dx; p.pivot_y += dy; }
+  for (auto& p : n.outputs) { p.bounds.x += dx; p.bounds.y += dy; p.pivot_x += dx; p.pivot_y += dy; }
+  RebuildWiresAndTopology();
+  return true;
 }
 
 size_t TL_GhDocument::SliderCount() const {

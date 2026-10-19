@@ -2831,6 +2831,171 @@ void TestGrasshopperAndStudioGui() {
     }
   }
 
+
+  // ---- 7. Grasshopper 10-tab component battery catalog + programmatic graph authoring
+  {
+    CHECK_EQ_INT((int)TL_GhComponentCatalog::Categories().size(), 10);
+    CHECK(TL_GhComponentCatalog::All().size() > 100);
+    CHECK(TL_GhComponentCatalog::ByCategory("Curve").size() >= 15);
+    CHECK(TL_GhComponentCatalog::ByCategory("Intersect").size() >= 6);
+    CHECK(nullptr != TL_GhComponentCatalog::Find("Divide Curve"));
+    CHECK(nullptr != TL_GhComponentCatalog::Find("Hexagonal"));
+    CHECK(nullptr != TL_GhComponentCatalog::Find("List Item"));
+
+    TL_GhDocument doc;
+    const int slider = doc.AddSlider("Radius", 1.0, 20.0, 6.0, 40.0f, 40.0f);
+    const int circle = doc.AddComponent("Circle", 260.0f, 40.0f);
+    CHECK(slider >= 0);
+    CHECK(circle >= 0);
+    CHECK(circle > slider);
+    CHECK_EQ_INT((int)doc.Nodes()[(size_t)circle].inputs.size(), 2);
+    CHECK(doc.Connect(slider, -1, circle, 1));
+    size_t out_vals = doc.Nodes()[(size_t)circle].outputs[0].runtime_data.size();
+    CHECK(out_vals > 0);
+    if (out_vals > 0) {
+      const TL_GhValue& v = doc.Nodes()[(size_t)circle].outputs[0].runtime_data[0];
+      CHECK(v.kind == TL_GhValueKind::Circle);
+      CHECK_NEAR(v.circle_val.radius, 6.0, 1e-6);
+      CHECK(doc.SetSliderValue("Radius", 9.5));
+      const TL_GhValue& v2 = doc.Nodes()[(size_t)circle].outputs[0].runtime_data[0];
+      CHECK_NEAR(v2.circle_val.radius, 9.5, 1e-6);
+    }
+    const float old_x = doc.Nodes()[(size_t)circle].bounds.x;
+    CHECK(doc.MoveNode(circle, 320.0f, 90.0f));
+    CHECK_NEAR((double)doc.Nodes()[(size_t)circle].bounds.x, 320.0, 1e-6);
+    CHECK(doc.Nodes()[(size_t)circle].bounds.x != old_x);
+    // Hexagonal battery produces both cells and centre points
+    const int hex = doc.AddComponent("Hexagonal", 40.0f, 220.0f);
+    CHECK(hex >= 0);
+    CHECK(doc.Nodes()[(size_t)hex].outputs.size() >= 2);
+    CHECK(doc.Nodes()[(size_t)hex].outputs[0].runtime_data.size() > 0);
+    CHECK(doc.Nodes()[(size_t)hex].outputs[1].runtime_data.size() > 0);
+  }
+
+  // ---- 8. Trackpad & mouse interaction state machine
+  {
+    const TL_GuiStudioRects rects = TL_ComputeStudioRects(1920, 1080);
+    TL_FourViewLayout layout = TL_FourViewLayout::Default(1920, 1080);
+    TL_ApplyStudioViewports(layout, rects, -1);
+    const ON_BoundingBox bbox(ON_3dPoint(-5, -5, -5), ON_3dPoint(5, 5, 5));
+    layout.ZoomToFitAll(bbox, 0.9);
+    TL_ApplyStudioViewports(layout, rects, -1);
+    TL_StudioInputState st;
+    st.gumball_origin = bbox.Center();
+    st.gumball_radius = 6.0;
+
+    const float px = (float)layout.View(0).m_left + 120.0f;
+    const float py = (float)layout.View(0).m_top + 140.0f;
+
+    // Trackpad pinch-to-zoom inside a 3D viewport
+    TL_StudioInputEvent pinch;
+    pinch.kind = TL_StudioEventKind::TrackpadPinch;
+    pinch.x = px; pinch.y = py; pinch.pinch_scale = 1.25f;
+    const double scale_before = layout.View(0).m_scale;
+    CHECK(TL_ProcessStudioInputEvent(pinch, rects, layout, bbox, nullptr, st));
+    CHECK(layout.View(0).m_scale > scale_before);
+
+    // Trackpad two-finger scroll pans the viewport (no modifier)
+    TL_StudioInputEvent scroll;
+    scroll.kind = TL_StudioEventKind::MouseWheel;
+    scroll.x = px; scroll.y = py;
+    scroll.wheel_x = 3.0f; scroll.wheel_y = 4.0f;
+    scroll.is_trackpad_scroll = true;
+    const ON_3dPoint tgt_before = layout.View(0).m_target;
+    const double s_before = layout.View(0).m_scale;
+    CHECK(TL_ProcessStudioInputEvent(scroll, rects, layout, bbox, nullptr, st));
+    CHECK(layout.View(0).m_target.DistanceTo(tgt_before) > 1e-3);
+    CHECK_NEAR(layout.View(0).m_scale, s_before, 1e-9);
+
+    // Discrete mouse wheel zooms (not pan)
+    TL_StudioInputEvent wheel = scroll;
+    wheel.is_trackpad_scroll = false;
+    wheel.wheel_x = 0.0f; wheel.wheel_y = 1.0f;
+    const double s2 = layout.View(0).m_scale;
+    CHECK(TL_ProcessStudioInputEvent(wheel, rects, layout, bbox, nullptr, st));
+    CHECK(layout.View(0).m_scale > s2);
+
+    // Option + trackpad scroll orbits the perspective camera
+    TL_StudioInputEvent orbit_scroll = scroll;
+    orbit_scroll.mod_alt = true;
+    orbit_scroll.x = (float)layout.View(1).m_left + 100.0f;
+    orbit_scroll.y = (float)layout.View(1).m_top + 100.0f;
+    orbit_scroll.wheel_x = 4.0f;
+    const ON_3dVector dir_before = layout.View(1).m_camera_dir;
+    CHECK(TL_ProcessStudioInputEvent(orbit_scroll, rects, layout, bbox, nullptr, st));
+    CHECK((layout.View(1).m_camera_dir - dir_before).Length() > 1e-6);
+
+    // RMB drag orbits in perspective, pans in orthographic
+    TL_StudioInputEvent down;
+    down.kind = TL_StudioEventKind::MouseDown;
+    down.button = 3;
+    down.x = (float)layout.View(1).m_left + 100.0f;
+    down.y = (float)layout.View(1).m_top + 100.0f;
+    CHECK(TL_ProcessStudioInputEvent(down, rects, layout, bbox, nullptr, st));
+    TL_StudioInputEvent move;
+    move.kind = TL_StudioEventKind::MouseMove;
+    move.x = down.x + 30.0f; move.y = down.y + 10.0f;
+    const ON_3dVector dir2 = layout.View(1).m_camera_dir;
+    CHECK(TL_ProcessStudioInputEvent(move, rects, layout, bbox, nullptr, st));
+    CHECK((layout.View(1).m_camera_dir - dir2).Length() > 1e-6);
+    TL_StudioInputEvent up = down;
+    up.kind = TL_StudioEventKind::MouseUp;
+    TL_ProcessStudioInputEvent(up, rects, layout, bbox, nullptr, st);
+
+    down.x = (float)layout.View(0).m_left + 100.0f;
+    down.y = (float)layout.View(0).m_top + 120.0f;
+    CHECK(TL_ProcessStudioInputEvent(down, rects, layout, bbox, nullptr, st));
+    const ON_3dPoint pan_tgt = layout.View(0).m_target;
+    move.x = down.x + 25.0f; move.y = down.y + 12.0f;
+    CHECK(TL_ProcessStudioInputEvent(move, rects, layout, bbox, nullptr, st));
+    CHECK(layout.View(0).m_target.DistanceTo(pan_tgt) > 1e-3);
+    TL_ProcessStudioInputEvent(up, rects, layout, bbox, nullptr, st);
+
+    // Double-click viewport title maximizes, second double-click restores 2x2
+    TL_StudioInputEvent dbl = down;
+    dbl.clicks = 2;
+    dbl.button = 1;
+    dbl.x = (float)layout.View(0).m_left + 60.0f;
+    dbl.y = (float)layout.View(0).m_top + 10.0f;   // viewport title bar
+    CHECK(TL_ProcessStudioInputEvent(dbl, rects, layout, bbox, nullptr, st));
+    CHECK_EQ_INT(st.maximized_view, 0);
+    TL_ApplyStudioViewports(layout, rects, st.maximized_view);
+    CHECK_EQ_INT(layout.View(0).m_width, (int)rects.viewports.w);
+    CHECK(TL_ProcessStudioInputEvent(dbl, rects, layout, bbox, nullptr, st));
+    CHECK_EQ_INT(st.maximized_view, -1);
+
+    // Grasshopper canvas: two-finger pan, pinch zoom, category tab switch
+    TL_GhDocument gh;
+    const int sl = gh.AddSlider("Segments", 1.0, 40.0, 12.0, 20.0f, 20.0f);
+    CHECK(sl >= 0);
+    TL_StudioInputEvent gh_scroll;
+    gh_scroll.kind = TL_StudioEventKind::MouseWheel;
+    gh_scroll.is_trackpad_scroll = true;
+    gh_scroll.x = rects.gh_canvas.x + 200.0f;
+    gh_scroll.y = rects.gh_canvas.y + 300.0f;
+    gh_scroll.wheel_x = 5.0f; gh_scroll.wheel_y = 6.0f;
+    const float pan_before = st.gh_pan_x;
+    CHECK(TL_ProcessStudioInputEvent(gh_scroll, rects, layout, bbox, &gh, st));
+    CHECK(st.gh_pan_x != pan_before);
+
+    TL_StudioInputEvent gh_pinch;
+    gh_pinch.kind = TL_StudioEventKind::TrackpadPinch;
+    gh_pinch.x = rects.gh_canvas.x + 200.0f;
+    gh_pinch.y = rects.gh_canvas.y + 300.0f;
+    gh_pinch.pinch_scale = 1.4f;
+    const float zoom_before = st.gh_zoom;
+    CHECK(TL_ProcessStudioInputEvent(gh_pinch, rects, layout, bbox, &gh, st));
+    CHECK(st.gh_zoom > zoom_before);
+
+    TL_StudioInputEvent tab;
+    tab.kind = TL_StudioEventKind::MouseDown;
+    tab.button = 1;
+    tab.x = rects.gh_canvas.x + 120.0f;
+    tab.y = rects.gh_canvas.y + 34.0f;
+    CHECK(TL_ProcessStudioInputEvent(tab, rects, layout, bbox, &gh, st));
+    CHECK(st.active_gh_category != 4 || st.active_gh_category >= 0);
+  }
+
   EndSection();
 }
 

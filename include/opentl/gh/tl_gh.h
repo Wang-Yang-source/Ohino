@@ -1,20 +1,23 @@
 #pragma once
 /**
  * @file tl_gh.h
- * @brief Ohino (OpenTL) Grasshopper (.gh / .ghx / .ghz) Archive Reader & Parametric DAG Solver (gh/)
+ * @brief Ohino (OpenTL) Grasshopper (.gh / .ghx / .ghz) Archive Reader, Full Component
+ *        Battery Catalog (10 tabs, 120+ components), & Parametric DAG Solver (gh/)
  *
  * Implements:
  *   1. Native binary `GH_Archive` (.gh) reader (raw deflate `wbits = -15` + 7-bit length-prefixed
- *      strings + 25 strongly-typed `GH_Types` items + recursive `GH_Chunk` hierarchy) and XML (.ghx)
- *      / ZIP (.ghz) readers.
+ *      strings + 25 strongly-typed `GH_Types` items + recursive `GH_Chunk` hierarchy), XML (.ghx),
+ *      and Grasshopper 2 (.ghz ZIP + Pear `Document.root`) readers.
  *   2. Full `DefinitionObjects` graph extraction: component GUIDs, instance UUIDs, 2D canvas
  *      `Bounds` & `Pivot` coordinates, input/output `TL_GhPort` pins, wire connections (`Source`),
  *      `PersistentData` DataTree branches, `Number Slider` ranges/values, `Panel` text, and `Group`
  *      containers.
- *   3. Kahn topological sort + parametric DAG evaluation engine backed by the OpenTL C++ geometry
- *      kernel (Points, Vectors, Lines, Circles, Arcs, NURBS Curves, Interpolate, Divide Curve,
- *      Curve Closest Point, Range, Bounds, Remap, Math operators, Loft, Sweep1, SubD Box, Planar
- *      Slice, and Mesh generation).
+ *   3. Comprehensive Grasshopper Component Battery Catalog (`TL_GhComponentCatalog`) covering all
+ *      10 standard tabs: Params, Maths, Sets, Vector, Curve, Surface, Mesh, Intersect, Transform,
+ *      and Display (120+ components), plus programmatic/GUI graph authoring (`AddComponent`,
+ *      `AddSlider`, `Connect`, `MoveNode`).
+ *   4. Kahn topological sort + parametric DAG evaluation engine backed by the OpenTL C++ geometry
+ *      kernel.
  */
 
 #include "../tl_export.h"
@@ -103,6 +106,39 @@ struct TL_CLASS TL_GhSliderState
   bool is_integer = false;
 };
 
+struct TL_CLASS TL_GhPortSpec
+{
+  std::string name;
+  std::string nickname;
+  std::string description;
+};
+
+/**
+ * Metadata descriptor for a standard Grasshopper component battery in the 10-tab palette.
+ */
+struct TL_CLASS TL_GhComponentSpec
+{
+  std::string category;     ///< Top-level tab: "Params", "Maths", "Sets", "Vector", "Curve", "Surface", "Mesh", "Intersect", "Transform", "Display"
+  std::string subcategory;  ///< Ribbon group: e.g. "Operators", "Primitive", "Freeform", "Euclidean"
+  std::string name;         ///< Canonical component name (e.g. "Divide Curve")
+  std::string nickname;     ///< Short canvas badge (e.g. "Divide")
+  std::string description;
+  std::vector<TL_GhPortSpec> inputs;
+  std::vector<TL_GhPortSpec> outputs;
+};
+
+/**
+ * Registry of all 120+ built-in Grasshopper component batteries across the 10 standard tabs.
+ */
+class TL_CLASS TL_GhComponentCatalog
+{
+public:
+  static const std::vector<std::string>& Categories();
+  static const std::vector<TL_GhComponentSpec>& All();
+  static std::vector<const TL_GhComponentSpec*> ByCategory(const std::string& category);
+  static const TL_GhComponentSpec* Find(const std::string& name_or_nickname);
+};
+
 struct TL_CLASS TL_GhPort
 {
   std::string instance_guid;
@@ -120,6 +156,7 @@ struct TL_CLASS TL_GhPort
 struct TL_CLASS TL_GhNode
 {
   int index = 0;
+  std::string category = "Params";
   std::string component_guid;
   std::string instance_guid;
   std::string name;
@@ -183,6 +220,28 @@ public:
   bool SetSliderValueByOrdinal(size_t slider_ordinal, double value);
 
   /**
+   * Instantiate any component battery from `TL_GhComponentCatalog` onto the canvas.
+   * Returns the new node index (or -1 if not found).
+   */
+  int AddComponent(const std::string& name_or_nickname, float canvas_x, float canvas_y);
+
+  /**
+   * Instantiate a Number Slider node onto the canvas and return its node index.
+   */
+  int AddSlider(const std::string& nickname, double min_val, double max_val, double value,
+                float canvas_x, float canvas_y);
+
+  /**
+   * Connect an output port of `from_node` to an input port of `to_node` and re-evaluate.
+   */
+  bool Connect(int from_node, int from_output, int to_node, int to_input);
+
+  /**
+   * Move a node on the canvas and update its port pivots & wire endpoints.
+   */
+  bool MoveNode(int node_index, float new_x, float new_y);
+
+  /**
    * Bake all visible (`!hidden`) evaluated 3D geometry (Points, Lines, Circles, Arcs,
    * NURBS Curves, Planes, Surfaces, Meshes) into `out_scene` and `out_meshes`.
    * Caller owns any newly allocated `ON_Mesh*` appended to `out_meshes`.
@@ -199,7 +258,7 @@ public:
   const std::vector<TL_GhNode>& Nodes() const { return nodes_; }
   std::vector<TL_GhNode>& NodesMutable() { return nodes_; }
   const std::vector<TL_GhWire>& Wires() const { return wires_; }
-  const std::vector<int>&TopologicalOrder() const { return topo_order_; }
+  const std::vector<int>& TopologicalOrder() const { return topo_order_; }
 
   size_t SliderCount() const;
   size_t Ports() const;
