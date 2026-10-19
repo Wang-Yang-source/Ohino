@@ -98,6 +98,10 @@ struct TL_CLASS TL_StudioInputState
   int active_slider = -1;          ///< Solved Parameters panel slider index
   int dragging_canvas_slider = -1; ///< Node index of slider dragged directly on GH canvas
   int dragging_canvas_node = -1;   ///< Node index being repositioned on GH canvas
+  int wiring_from_node = -1;       ///< Node index where interactive wire drag started
+  int wiring_from_output = -1;     ///< Output port index (-1 for standalone node)
+  float wiring_cursor_x = 0.0f;    ///< Live cursor X during wire drag
+  float wiring_cursor_y = 0.0f;    ///< Live cursor Y during wire drag
   bool panning_gh_canvas = false;
   int active_gh_category = 4;      ///< 0..9 index into TL_GhComponentCatalog::Categories()
   float gh_zoom = 1.0f;

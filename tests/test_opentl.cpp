@@ -2870,6 +2870,24 @@ void TestGrasshopperAndStudioGui() {
     CHECK(doc.Nodes()[(size_t)hex].outputs.size() >= 2);
     CHECK(doc.Nodes()[(size_t)hex].outputs[0].runtime_data.size() > 0);
     CHECK(doc.Nodes()[(size_t)hex].outputs[1].runtime_data.size() > 0);
+    // SaveGh & SaveGhx lossless round-trip verification
+    const std::string tmp_gh = "/tmp/ohino_roundtrip_test.gh";
+    const std::string tmp_ghx = "/tmp/ohino_roundtrip_test.ghx";
+    std::string serr;
+    CHECK(doc.SaveFile(tmp_gh, &serr));
+    CHECK(doc.SaveFile(tmp_ghx, &serr));
+
+    TL_GhDocument reloaded_gh;
+    CHECK(reloaded_gh.LoadFile(tmp_gh, &serr));
+    CHECK_EQ_INT((int)reloaded_gh.Nodes().size(), (int)doc.Nodes().size());
+    CHECK_EQ_INT((int)reloaded_gh.SliderCount(), (int)doc.SliderCount());
+    CHECK_EQ_INT((int)reloaded_gh.Wires().size(), (int)doc.Wires().size());
+
+    TL_GhDocument reloaded_ghx;
+    CHECK(reloaded_ghx.LoadFile(tmp_ghx, &serr));
+    CHECK_EQ_INT((int)reloaded_ghx.Nodes().size(), (int)doc.Nodes().size());
+    CHECK_EQ_INT((int)reloaded_ghx.SliderCount(), (int)doc.SliderCount());
+    CHECK_EQ_INT((int)reloaded_ghx.Wires().size(), (int)doc.Wires().size());
   }
 
   // ---- 8. Trackpad & mouse interaction state machine

@@ -242,6 +242,14 @@ public:
   bool MoveNode(int node_index, float new_x, float new_y);
 
   /**
+   * Save the current Grasshopper definition as a binary `.gh` (raw-deflate `GH_Archive`)
+   * or XML `.ghx` file (chosen by extension or explicitly via `SaveGh` / `SaveGhx`).
+   */
+  bool SaveFile(const std::string& file_path, std::string* error_out = nullptr) const;
+  bool SaveGh(const std::string& file_path, std::string* error_out = nullptr) const;
+  bool SaveGhx(const std::string& file_path, std::string* error_out = nullptr) const;
+
+  /**
    * Bake all visible (`!hidden`) evaluated 3D geometry (Points, Lines, Circles, Arcs,
    * NURBS Curves, Planes, Surfaces, Meshes) into `out_scene` and `out_meshes`.
    * Caller owns any newly allocated `ON_Mesh*` appended to `out_meshes`.

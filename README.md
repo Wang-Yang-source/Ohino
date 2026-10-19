@@ -13,8 +13,16 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/Wang-Yang-source/Ohino/releases/latest"><b>Download Latest Releases (Windows / macOS / Linux)</b></a>
+  ·
   <a href="https://github.com/Wang-Yang-source/Ohino">github.com/Wang-Yang-source/Ohino</a>
 </p>
+
+| Platform | Architecture | Direct Download |
+| --- | --- | --- |
+| **macOS** | Apple Silicon (`arm64`) | [`Ohino-v0.2.0-macos-arm64.dmg`](https://github.com/Wang-Yang-source/Ohino/releases/download/v0.2.0/Ohino-v0.2.0-macos-arm64.dmg) · [`.pkg`](https://github.com/Wang-Yang-source/Ohino/releases/download/v0.2.0/Ohino-v0.2.0-macos-arm64.pkg) · [`.tar.gz`](https://github.com/Wang-Yang-source/Ohino/releases/download/v0.2.0/Ohino-v0.2.0-macos-arm64.tar.gz) |
+| **Windows** | 64-bit (`x86_64`) | [`Ohino-v0.2.0-windows-x86_64.zip`](https://github.com/Wang-Yang-source/Ohino/releases/download/v0.2.0/Ohino-v0.2.0-windows-x86_64.zip) |
+| **Linux** | 64-bit (`x86_64`) | [`Ohino-v0.2.0-linux-x86_64.deb`](https://github.com/Wang-Yang-source/Ohino/releases/download/v0.2.0/Ohino-v0.2.0-linux-x86_64.deb) · [`.tar.gz`](https://github.com/Wang-Yang-source/Ohino/releases/download/v0.2.0/Ohino-v0.2.0-linux-x86_64.tar.gz) |
 
 ---
 

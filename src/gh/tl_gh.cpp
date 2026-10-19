@@ -1290,7 +1290,12 @@ bool TL_GhDocument::LoadFile(const std::string& file_path, std::string* error_ou
 
   // Root -> Definition -> DefinitionObjects
   const GhChunk* def = nullptr;
-  for (const auto& c : root.children) if (c.name == "Definition") def = &c;
+  for (const auto& c : root.children) {
+    if (c.name == "Definition") def = &c;
+    else if (c.name == "Root") {
+      for (const auto& rc : c.children) if (rc.name == "Definition") def = &rc;
+    }
+  }
   if (!def && root.name == "Definition") def = &root;
   if (!def) { if (error_out) *error_out = "no Definition chunk"; return false; }
   const GhChunk* objects = nullptr;
@@ -3460,4 +3465,243 @@ std::string TL_GhDocument::FormatSummary() const {
      << "\ngh.wires=" << wires_in
      << "\ngh.canvas=" << (int)cb.x << "," << (int)cb.y << " " << (int)cb.w << "x" << (int)cb.h;
   return os.str();
+}
+
+
+// ============================================================================
+// Grasshopper Archive Serialization (.gh binary raw-deflate & .ghx XML)
+// ============================================================================
+
+namespace {
+
+struct BinWriter {
+  std::vector<unsigned char> buf;
+
+  void U8(unsigned char v) { buf.push_back(v); }
+  void I32(int32_t v) {
+    unsigned char b[4];
+    std::memcpy(b, &v, 4);
+    buf.insert(buf.end(), b, b + 4);
+  }
+  void F32(float v) {
+    unsigned char b[4];
+    std::memcpy(b, &v, 4);
+    buf.insert(buf.end(), b, b + 4);
+  }
+  void F64(double v) {
+    unsigned char b[8];
+    std::memcpy(b, &v, 8);
+    buf.insert(buf.end(), b, b + 8);
+  }
+  void Str7(const std::string& str) {
+    size_t len = str.size();
+    while (len >= 0x80) {
+      U8((unsigned char)((len & 0x7F) | 0x80));
+      len >>= 7;
+    }
+    U8((unsigned char)(len & 0x7F));
+    buf.insert(buf.end(), str.begin(), str.end());
+  }
+  void ItemBool(const char* name, int idx, bool v) {
+    Str7(name); I32(idx); I32(1); U8(v ? 1 : 0);
+  }
+  void ItemI32(const char* name, int idx, int32_t v) {
+    Str7(name); I32(idx); I32(3); I32(v);
+  }
+  void ItemF64(const char* name, int idx, double v) {
+    Str7(name); I32(idx); I32(6); F64(v);
+  }
+  void ItemStr(const char* name, int idx, const std::string& v) {
+    Str7(name); I32(idx); I32(10); Str7(v);
+  }
+  void ItemPoint2F(const char* name, int idx, float x, float y) {
+    Str7(name); I32(idx); I32(31); F32(x); F32(y);
+  }
+  void ItemRectF(const char* name, int idx, float x, float y, float w, float h) {
+    Str7(name); I32(idx); I32(35); F32(x); F32(y); F32(w); F32(h);
+  }
+};
+
+bool DeflateRaw(const std::vector<unsigned char>& in, std::vector<unsigned char>& out) {
+  z_stream s;
+  std::memset(&s, 0, sizeof(s));
+  if (deflateInit2(&s, Z_DEFAULT_COMPRESSION, Z_DEFLATED, -15, 8, Z_DEFAULT_STRATEGY) != Z_OK)
+    return false;
+  out.resize(in.size() + 4096);
+  s.next_in = const_cast<Bytef*>(in.data());
+  s.avail_in = (uInt)in.size();
+  s.next_out = out.data();
+  s.avail_out = (uInt)out.size();
+  int rc = deflate(&s, Z_FINISH);
+  if (rc != Z_STREAM_END) {
+    deflateEnd(&s);
+    return false;
+  }
+  out.resize(s.total_out);
+  deflateEnd(&s);
+  return true;
+}
+
+std::string XmlEsc(const std::string& in) {
+  std::string out;
+  for (char c : in) {
+    if (c == '&') out += "&amp;";
+    else if (c == '<') out += "&lt;";
+    else if (c == '>') out += "&gt;";
+    else if (c == '"') out += "&quot;";
+    else out += c;
+  }
+  return out;
+}
+
+} // namespace
+
+bool TL_GhDocument::SaveFile(const std::string& file_path, std::string* error_out) const {
+  if (file_path.size() >= 4 && file_path.substr(file_path.size() - 4) == ".ghx")
+    return SaveGhx(file_path, error_out);
+  return SaveGh(file_path, error_out);
+}
+
+bool TL_GhDocument::SaveGh(const std::string& file_path, std::string* error_out) const {
+  BinWriter w;
+  // Root chunk: 0 items, 1 child ("Definition")
+  w.Str7("Root"); w.I32(-1); w.I32(0); w.I32(1);
+  // Definition chunk: 1 item ("Name"), 1 child ("DefinitionObjects")
+  w.Str7("Definition"); w.I32(-1); w.I32(1); w.I32(1);
+  w.ItemStr("Name", -1, document_name_.empty() ? "OhinoDefinition.gh" : document_name_);
+  // DefinitionObjects chunk: 1 item ("ObjectCount"), N children ("Object")
+  w.Str7("DefinitionObjects"); w.I32(-1); w.I32(1); w.I32((int32_t)nodes_.size());
+  w.ItemI32("ObjectCount", -1, (int32_t)nodes_.size());
+
+  for (size_t i = 0; i < nodes_.size(); ++i) {
+    const TL_GhNode& n = nodes_[i];
+    // Object chunk: 2 items (GUID, Name), 1 child (Container)
+    w.Str7("Object"); w.I32((int32_t)i); w.I32(2); w.I32(1);
+    w.ItemStr("GUID", -1, n.component_guid.empty() ? "ohino-guid" : n.component_guid);
+    w.ItemStr("Name", -1, n.name);
+
+    int cont_items = 4; // InstanceGuid, Name, NickName, Hidden
+    if (n.is_panel || n.is_scribble) cont_items += 1; // Text
+    if (!n.expression.empty()) cont_items += 1;       // Expression
+    cont_items += (int)n.group_member_guids.size();   // ID[k]
+
+    int cont_children = 1 + (n.is_slider ? 1 : 0) + (int)n.inputs.size() + (int)n.outputs.size();
+    w.Str7("Container"); w.I32(-1); w.I32(cont_items); w.I32(cont_children);
+    w.ItemStr("InstanceGuid", -1, n.instance_guid);
+    w.ItemStr("Name", -1, n.name);
+    w.ItemStr("NickName", -1, n.nickname);
+    w.ItemBool("Hidden", -1, n.hidden);
+    if (n.is_panel || n.is_scribble) w.ItemStr("Text", -1, n.panel_text);
+    if (!n.expression.empty()) w.ItemStr("Expression", -1, n.expression);
+    for (size_t gi = 0; gi < n.group_member_guids.size(); ++gi)
+      w.ItemStr("ID", (int)gi, n.group_member_guids[gi]);
+
+    // Child 0: Attributes
+    w.Str7("Attributes"); w.I32(-1); w.I32(2); w.I32(0);
+    w.ItemRectF("Bounds", -1, n.bounds.x, n.bounds.y, n.bounds.w, n.bounds.h);
+    w.ItemPoint2F("Pivot", -1, n.pivot_x, n.pivot_y);
+
+    // Optional Child: Slider
+    if (n.is_slider) {
+      w.Str7("Slider"); w.I32(-1); w.I32(5); w.I32(0);
+      w.ItemF64("Min", -1, n.slider.min_val);
+      w.ItemF64("Max", -1, n.slider.max_val);
+      w.ItemF64("Value", -1, n.slider.value);
+      w.ItemI32("Digits", -1, n.slider.digits);
+      w.ItemBool("Integer", -1, n.slider.is_integer);
+    }
+
+    auto write_port = [&](const TL_GhPort& p, bool is_out, int pidx) {
+      w.Str7(is_out ? "param_output" : "param_input");
+      w.I32(pidx);
+      w.I32(3 + (int)p.source_guids.size());
+      w.I32(1);
+      w.ItemStr("InstanceGuid", -1, p.instance_guid);
+      w.ItemStr("Name", -1, p.name);
+      w.ItemStr("NickName", -1, p.nickname);
+      for (size_t si = 0; si < p.source_guids.size(); ++si)
+        w.ItemStr("Source", (int)si, p.source_guids[si]);
+      w.Str7("Attributes"); w.I32(-1); w.I32(2); w.I32(0);
+      w.ItemRectF("Bounds", -1, p.bounds.x, p.bounds.y, p.bounds.w, p.bounds.h);
+      w.ItemPoint2F("Pivot", -1, p.pivot_x, p.pivot_y);
+    };
+    for (size_t pi = 0; pi < n.inputs.size(); ++pi) write_port(n.inputs[pi], false, (int)pi);
+    for (size_t po = 0; po < n.outputs.size(); ++po) write_port(n.outputs[po], true, (int)po);
+  }
+
+  std::vector<unsigned char> deflated;
+  if (!DeflateRaw(w.buf, deflated)) {
+    if (error_out) *error_out = "deflate compression failed";
+    return false;
+  }
+  FILE* f = std::fopen(file_path.c_str(), "wb");
+  if (!f) {
+    if (error_out) *error_out = "cannot open output file: " + file_path;
+    return false;
+  }
+  const size_t written = std::fwrite(deflated.data(), 1, deflated.size(), f);
+  std::fclose(f);
+  return written == deflated.size();
+}
+
+bool TL_GhDocument::SaveGhx(const std::string& file_path, std::string* error_out) const {
+  std::ostringstream os;
+  os << "<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"yes\"?>\n";
+  os << "<Archive name=\"Root\">\n  <chunks count=\"1\">\n";
+  os << "    <chunk name=\"Definition\">\n";
+  os << "      <items count=\"1\"><item name=\"Name\" type_code=\"10\">"
+     << XmlEsc(document_name_.empty() ? "OhinoDefinition.ghx" : document_name_) << "</item></items>\n";
+  os << "      <chunks count=\"1\">\n        <chunk name=\"DefinitionObjects\">\n";
+  os << "          <items count=\"1\"><item name=\"ObjectCount\" type_code=\"3\">" << nodes_.size() << "</item></items>\n";
+  os << "          <chunks count=\"" << nodes_.size() << "\">\n";
+  for (size_t i = 0; i < nodes_.size(); ++i) {
+    const TL_GhNode& n = nodes_[i];
+    os << "            <chunk name=\"Object\" index=\"" << i << "\">\n";
+    os << "              <items count=\"2\">\n";
+    os << "                <item name=\"GUID\" type_code=\"10\">" << XmlEsc(n.component_guid) << "</item>\n";
+    os << "                <item name=\"Name\" type_code=\"10\">" << XmlEsc(n.name) << "</item>\n";
+    os << "              </items>\n              <chunks count=\"1\">\n";
+    os << "                <chunk name=\"Container\">\n                  <items>\n";
+    os << "                    <item name=\"InstanceGuid\" type_code=\"10\">" << XmlEsc(n.instance_guid) << "</item>\n";
+    os << "                    <item name=\"Name\" type_code=\"10\">" << XmlEsc(n.name) << "</item>\n";
+    os << "                    <item name=\"NickName\" type_code=\"10\">" << XmlEsc(n.nickname) << "</item>\n";
+    os << "                  </items>\n                  <chunks>\n";
+    if (n.is_slider) {
+      os << "                    <chunk name=\"Slider\"><items>\n";
+      os << "                      <item name=\"Min\" type_code=\"6\">" << n.slider.min_val << "</item>\n";
+      os << "                      <item name=\"Max\" type_code=\"6\">" << n.slider.max_val << "</item>\n";
+      os << "                      <item name=\"Value\" type_code=\"6\">" << n.slider.value << "</item>\n";
+      os << "                    </items></chunk>\n";
+    }
+    for (size_t pi = 0; pi < n.inputs.size(); ++pi) {
+      const TL_GhPort& p = n.inputs[pi];
+      os << "                    <chunk name=\"param_input\" index=\"" << pi << "\"><items>\n";
+      os << "                      <item name=\"InstanceGuid\" type_code=\"10\">" << XmlEsc(p.instance_guid) << "</item>\n";
+      os << "                      <item name=\"Name\" type_code=\"10\">" << XmlEsc(p.name) << "</item>\n";
+      os << "                      <item name=\"NickName\" type_code=\"10\">" << XmlEsc(p.nickname) << "</item>\n";
+      for (size_t si = 0; si < p.source_guids.size(); ++si)
+        os << "                      <item name=\"Source\" index=\"" << si << "\" type_code=\"10\">" << XmlEsc(p.source_guids[si]) << "</item>\n";
+      os << "                    </items></chunk>\n";
+    }
+    for (size_t po = 0; po < n.outputs.size(); ++po) {
+      const TL_GhPort& p = n.outputs[po];
+      os << "                    <chunk name=\"param_output\" index=\"" << po << "\"><items>\n";
+      os << "                      <item name=\"InstanceGuid\" type_code=\"10\">" << XmlEsc(p.instance_guid) << "</item>\n";
+      os << "                      <item name=\"Name\" type_code=\"10\">" << XmlEsc(p.name) << "</item>\n";
+      os << "                      <item name=\"NickName\" type_code=\"10\">" << XmlEsc(p.nickname) << "</item>\n";
+      os << "                    </items></chunk>\n";
+    }
+    os << "                  </chunks>\n                </chunk>\n              </chunks>\n            </chunk>\n";
+  }
+  os << "          </chunks>\n        </chunk>\n      </chunks>\n    </chunk>\n  </chunks>\n</Archive>\n";
+
+  FILE* f = std::fopen(file_path.c_str(), "wb");
+  if (!f) {
+    if (error_out) *error_out = "cannot open output file: " + file_path;
+    return false;
+  }
+  const std::string xml = os.str();
+  const size_t written = std::fwrite(xml.data(), 1, xml.size(), f);
+  std::fclose(f);
+  return written == xml.size();
 }

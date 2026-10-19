@@ -588,6 +588,53 @@ bool InFill(const TL_GuiFill& f, float x, float y) {
   return x >= f.x && x <= f.x + f.w && y >= f.y && y <= f.y + f.h;
 }
 
+int GhCanvasPortAt(const TL_GhDocument& gh, const TL_GuiStudioRects& rects,
+                   float x, float y, bool want_output, int* out_node, int* out_port) {
+  if (!out_node || !out_port) return 0;
+  const TL_GuiFill& canvas = rects.gh_canvas;
+  const float cx0 = canvas.x + 14.0f;
+  const float cy0 = canvas.y + 74.0f;
+  const float cw = canvas.w - 28.0f;
+  const float ch = canvas.h - 86.0f;
+  const TL_GhRectF cb = gh.CanvasBounds();
+  float sx = std::max(0.32f, std::min(0.75f, (cw - 36.0f) / std::max(1.0f, cb.w)));
+  float sy = std::max(sx, std::min(sx * 1.65f, (ch - 64.0f) / std::max(1.0f, cb.h)));
+  const float ox = cx0 + (cw - cb.w * sx) * 0.5f - cb.x * sx;
+  const float oy = cy0 + (ch - cb.h * sy) * 0.52f - cb.y * sy;
+  for (int i = (int)gh.Nodes().size() - 1; i >= 0; --i) {
+    const TL_GhNode& n = gh.Nodes()[(size_t)i];
+    if (n.is_group || n.is_scribble) continue;
+    const float nx = ox + n.bounds.x * sx;
+    const float ny = oy + n.bounds.y * sy;
+    const float nw = n.is_slider ? std::min(112.0f, std::max(78.0f, n.bounds.w * sx * 0.65f))
+                                 : std::max(38.0f, n.bounds.w * sx);
+    const float nh = n.is_slider ? 20.0f : std::max(22.0f, n.bounds.h * sy);
+    if (want_output) {
+      if (n.is_slider || n.outputs.empty()) {
+        if (std::hypot(x - (nx + nw), y - (ny + nh * 0.5f)) <= 10.0f) {
+          *out_node = i; *out_port = -1; return 1;
+        }
+      }
+      const int ocols = std::max<int>(1, (int)n.outputs.size());
+      for (int p_i = 0; p_i < (int)n.outputs.size(); ++p_i) {
+        const float py = ny + nh * ((float)(p_i + 1) / (float)(ocols + 1));
+        if (std::hypot(x - (nx + nw), y - py) <= 10.0f) {
+          *out_node = i; *out_port = p_i; return 1;
+        }
+      }
+    } else {
+      const int icols = std::max<int>(1, (int)n.inputs.size());
+      for (int p_i = 0; p_i < (int)n.inputs.size(); ++p_i) {
+        const float py = ny + nh * ((float)(p_i + 1) / (float)(icols + 1));
+        if (std::hypot(x - nx, y - py) <= 10.0f) {
+          *out_node = i; *out_port = p_i; return 1;
+        }
+      }
+    }
+  }
+  return 0;
+}
+
 int GhCanvasNodeAt(const TL_GhDocument& gh, const TL_GuiStudioRects& rects,
                    float x, float y, bool want_slider, int* out_node) {
   if (!out_node) return 0;
@@ -715,6 +762,14 @@ bool TL_ProcessStudioInputEvent(const TL_StudioInputEvent& ev, const TL_GuiStudi
           }
         }
         if (gh_doc) {
+          int w_node = -1, w_port = -1;
+          if (GhCanvasPortAt(*gh_doc, rects, ev.x, ev.y, true, &w_node, &w_port)) {
+            state.wiring_from_node = w_node;
+            state.wiring_from_output = w_port;
+            state.wiring_cursor_x = ev.x;
+            state.wiring_cursor_y = ev.y;
+            return true;
+          }
           int slider_node = -1;
           if (GhCanvasNodeAt(*gh_doc, rects, ev.x, ev.y, true, &slider_node)) {
             state.dragging_canvas_slider = slider_node;
@@ -781,13 +836,22 @@ bool TL_ProcessStudioInputEvent(const TL_StudioInputEvent& ev, const TL_GuiStudi
       return false;
     }
     case TL_StudioEventKind::MouseUp: {
+      bool connected = false;
+      if (state.wiring_from_node >= 0 && gh_doc) {
+        int dst_node = -1, dst_port = -1;
+        if (GhCanvasPortAt(*gh_doc, rects, ev.x, ev.y, false, &dst_node, &dst_port)) {
+          connected = gh_doc->Connect(state.wiring_from_node, state.wiring_from_output, dst_node, dst_port);
+        }
+      }
+      state.wiring_from_node = -1;
+      state.wiring_from_output = -1;
       state.dragging_view = false;
       state.active_slider = -1;
       state.dragging_canvas_slider = -1;
       state.dragging_canvas_node = -1;
       state.panning_gh_canvas = false;
       state.dragging_gumball_axis = -1;
-      return false;
+      return connected;
     }
     case TL_StudioEventKind::MouseMove: {
       const float dx = ev.x - state.last_mx;
@@ -796,6 +860,11 @@ bool TL_ProcessStudioInputEvent(const TL_StudioInputEvent& ev, const TL_GuiStudi
       state.last_my = ev.y;
       bool dirty = false;
 
+      if (state.wiring_from_node >= 0) {
+        state.wiring_cursor_x = ev.x;
+        state.wiring_cursor_y = ev.y;
+        return true;
+      }
       if (state.active_slider >= 0 && gh_doc) {
         const float bar_x = rects.gh_params.x + 150.0f;
         const float bar_w = rects.gh_params.w - 250.0f;

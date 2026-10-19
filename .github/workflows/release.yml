@@ -1,0 +1,165 @@
+name: Release Cross-Platform Packages (Windows / macOS / Linux)
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish (e.g. v0.2.0)'
+        required: false
+        default: 'v0.2.0'
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    name: Build & Package macOS (arm64 .dmg / .pkg / .tar.gz)
+    runs-on: macos-14
+    steps:
+      - name: Checkout Ohino
+        uses: actions/checkout@v4
+        with:
+          path: opentl
+
+      - name: Checkout mcneel/opennurbs
+        uses: actions/checkout@v4
+        with:
+          repository: mcneel/opennurbs
+          path: external/opennurbs
+
+      - name: Install Vulkan + MoltenVK + SDL3
+        run: |
+          brew install vulkan-headers vulkan-loader molten-vk sdl3
+
+      - name: Configure & Build
+        run: |
+          cmake -S opentl -B opentl/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build opentl/build -j4
+          ctest --test-dir opentl/build --output-on-failure
+
+      - name: Package macOS Installers (.dmg / .pkg / .tar.gz)
+        run: |
+          mkdir -p dist
+          cmake --install opentl/build --prefix dist/Ohino-macos-arm64
+          tar -czf dist/Ohino-v0.2.0-macos-arm64.tar.gz -C dist Ohino-macos-arm64
+          pkgbuild --root dist/Ohino-macos-arm64 --identifier org.ohino.studio --version 0.2.0 --install-location /usr/local dist/Ohino-v0.2.0-macos-arm64.pkg
+          hdiutil create -volname "Ohino Studio" -srcfolder dist/Ohino-macos-arm64 -ov -format UDZO dist/Ohino-v0.2.0-macos-arm64.dmg
+
+      - name: Upload macOS Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages-macos
+          path: dist/Ohino-v0.2.0-macos-*
+
+  build-linux:
+    name: Build & Package Linux (x86_64 .deb / .tar.gz)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout Ohino
+        uses: actions/checkout@v4
+        with:
+          path: opentl
+
+      - name: Checkout mcneel/opennurbs
+        uses: actions/checkout@v4
+        with:
+          repository: mcneel/opennurbs
+          path: external/opennurbs
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake libvulkan-dev uuid-dev zlib1g-dev
+
+      - name: Configure, Build & Test
+        run: |
+          cmake -S opentl -B opentl/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build opentl/build -j4
+          ./opentl/build/opentl_tests
+
+      - name: Package Linux Installers (.deb & .tar.gz)
+        run: |
+          mkdir -p dist
+          cd opentl/build
+          cpack -G "DEB;TGZ"
+          cp Ohino-*.deb "../../dist/Ohino-v0.2.0-linux-x86_64.deb"
+          cp Ohino-*.tar.gz "../../dist/Ohino-v0.2.0-linux-x86_64.tar.gz"
+
+      - name: Upload Linux Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages-linux
+          path: dist/Ohino-v0.2.0-linux-*
+
+  build-windows:
+    name: Build & Package Windows (x86_64 .zip & Installer)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Ohino
+        uses: actions/checkout@v4
+        with:
+          path: opentl
+
+      - name: Checkout mcneel/opennurbs
+        uses: actions/checkout@v4
+        with:
+          repository: mcneel/opennurbs
+          path: external/opennurbs
+
+      - name: Patch opennurbs UTF-8 flag for MSVC
+        shell: pwsh
+        run: |
+          $f = "external/opennurbs/CMakeLists.txt"
+          (Get-Content $f) -replace 'add_compile_options\(/W4\)', 'add_compile_options(/W4 /utf-8)' | Set-Content $f
+
+      - name: Configure, Build & Test (MSVC x64)
+        shell: pwsh
+        run: |
+          cmake -S opentl -B opentl/build -A x64 -DCMAKE_CXX_FLAGS="/utf-8 /EHsc"
+          cmake --build opentl/build --config Release -j4
+          ./opentl/build/Release/opentl_tests.exe
+
+      - name: Package Windows (.zip & NSIS .exe)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          cmake --install opentl/build --config Release --prefix dist/Ohino-windows-x86_64
+          Compress-Archive -Path dist/Ohino-windows-x86_64/* -DestinationPath dist/Ohino-v0.2.0-windows-x86_64.zip -Force
+
+      - name: Upload Windows Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages-windows
+          path: dist/Ohino-v0.2.0-windows-*
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: [build-macos, build-linux, build-windows]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download All Platform Packages
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create or Update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.ref_name }}"
+          if [[ "$TAG" != v* ]]; then
+            TAG="${{ inputs.tag || 'v0.2.0' }}"
+          fi
+          ls -lh release-assets/
+          if gh release view "$TAG" -R "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release upload "$TAG" release-assets/* --clobber -R "${{ github.repository }}"
+          else
+            gh release create "$TAG" release-assets/* \
+              --title "Ohino $TAG — Cross-Platform NURBS & Grasshopper Studio" \
+              --notes "Cross-platform installers and portable archives for Windows (x86_64), macOS (Apple Silicon arm64), and Linux (x86_64)." \
+              -R "${{ github.repository }}"
+          fi

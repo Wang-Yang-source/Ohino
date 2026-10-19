@@ -35,12 +35,18 @@ if(NOT SDL3_FOUND)
   find_library(SDL3_LIBRARY NAMES SDL3 HINTS /opt/homebrew/lib /usr/local/lib)
 endif()
 
+if(UNIX AND NOT APPLE)
+  set(OPENTL_PLATFORM_LIBS pthread dl)
+else()
+  set(OPENTL_PLATFORM_LIBS "")
+endif()
+
 add_library(opentl STATIC ${OPENTL_SOURCES})
 target_include_directories(opentl PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
     "${OPENNURBS_DIR}"
 )
-target_link_libraries(opentl PUBLIC opennurbsStatic pthread dl)
+target_link_libraries(opentl PUBLIC opennurbsStatic ${OPENTL_PLATFORM_LIBS})
 if(Vulkan_FOUND)
   target_compile_definitions(opentl PRIVATE OPENTL_HAS_VULKAN=1)
   target_include_directories(opentl PRIVATE ${Vulkan_INCLUDE_DIRS})
@@ -65,7 +71,7 @@ target_include_directories(opentl_shared PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
     "${OPENNURBS_DIR}"
 )
-target_link_libraries(opentl_shared PUBLIC opennurbsStatic pthread dl)
+target_link_libraries(opentl_shared PUBLIC opennurbsStatic ${OPENTL_PLATFORM_LIBS})
 if(Vulkan_FOUND)
   target_compile_definitions(opentl_shared PRIVATE OPENTL_HAS_VULKAN=1)
   target_include_directories(opentl_shared PRIVATE ${Vulkan_INCLUDE_DIRS})
@@ -91,3 +97,27 @@ add_test(NAME opentl_cli_demo COMMAND opentl_cli --demo --out-dir "${CMAKE_CURRE
 add_test(NAME opentl_cli_views COMMAND opentl_cli --views --out-dir "${CMAKE_CURRENT_BINARY_DIR}/views_out")
 add_test(NAME opentl_cli_vulkan COMMAND opentl_cli --render-vulkan --out-dir "${CMAKE_CURRENT_BINARY_DIR}/vulkan_out")
 add_test(NAME opentl_cli_gui COMMAND opentl_cli --render-gui --out-dir "${CMAKE_CURRENT_BINARY_DIR}/gui_out")
+
+# ----------------------------------------------------------------------------
+# Install & Cross-Platform CPack Packaging (Windows / macOS / Linux)
+# ----------------------------------------------------------------------------
+include(GNUInstallDirs)
+install(TARGETS opentl_cli opentl opentl_shared
+  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+)
+install(DIRECTORY include/opentl DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(FILES README.md DESTINATION ${CMAKE_INSTALL_DOCDIR})
+
+set(CPACK_PACKAGE_NAME "Ohino")
+set(CPACK_PACKAGE_VENDOR "Ohino Project")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Ohino — A visual programming and parametric modeling tool and design software")
+set(CPACK_PACKAGE_VERSION_MAJOR 0)
+set(CPACK_PACKAGE_VERSION_MINOR 2)
+set(CPACK_PACKAGE_VERSION_PATCH 0)
+set(CPACK_PACKAGE_CONTACT "wayamac@local")
+set(CPACK_RESOURCE_FILE_README "${CMAKE_CURRENT_SOURCE_DIR}/README.md")
+set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Ohino Project <wayamac@local>")
+set(CPACK_DEBIAN_PACKAGE_SECTION "graphics")
+include(CPack)
