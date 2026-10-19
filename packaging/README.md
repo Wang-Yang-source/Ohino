@@ -15,6 +15,9 @@ Windows machine, Visual Studio, or the Windows SDK:
 
 ```sh
 brew install mingw-w64 makensis
+# optional but recommended: cross-build SDL3 + the Vulkan loader so the package
+# ships the interactive studio window and the GPU renderer (no MSVC needed)
+tools/build_windows_deps.sh
 cmake -S . -B build-win -DCMAKE_TOOLCHAIN_FILE=<mingw_toolchain.cmake> \
       -DCMAKE_BUILD_TYPE=Release -DOPENTL_ENABLE_SDL3=OFF
 cmake --build build-win -j8

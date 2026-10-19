@@ -86,9 +86,18 @@ set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
 set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 EOF
+  # SDL3 + the Vulkan loader are cross-built once by tools/build_windows_deps.sh;
+  # without them the package still builds, just without the interactive window.
+  WIN_DEPS="${OHINO_WIN_DEPS:-${TMPDIR:-/tmp}/ohino-win-deps}"
+  WIN_EXTRA=(-DOPENTL_ENABLE_SDL3=OFF)
+  if [[ -f "${WIN_DEPS}/SDL3.dll" ]]; then
+    WIN_EXTRA=(-DSDL3_DIR="${WIN_DEPS}/SDL3-build"
+               -DVulkan_INCLUDE_DIR="${WIN_DEPS}/include"
+               -DVulkan_LIBRARY="${WIN_DEPS}/libvulkan-1.dll.a")
+  fi
   cmake -S "${ROOT}" -B "${WORK}/build-win" \
     -DCMAKE_TOOLCHAIN_FILE="${WORK}/mingw_toolchain.cmake" \
-    -DCMAKE_BUILD_TYPE=Release -DOPENTL_ENABLE_SDL3=OFF \
+    -DCMAKE_BUILD_TYPE=Release "${WIN_EXTRA[@]}" \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5 >/dev/null
   cmake --build "${WORK}/build-win" -j8 >/dev/null
   x86_64-w64-mingw32-strip "${WORK}/build-win/opentl_cli.exe" || true
@@ -96,6 +105,9 @@ EOF
 
   cmake --install "${WORK}/build-win" --prefix "${WORK}/win/Ohino-windows-x86_64"
   rm -f "${WORK}/win/Ohino-windows-x86_64/lib/libopentl.a"
+  for dll in SDL3.dll vulkan-1.dll; do
+    [[ -f "${WIN_DEPS}/${dll}" ]] && cp "${WIN_DEPS}/${dll}" "${WORK}/win/Ohino-windows-x86_64/bin/"
+  done
   (cd "${WORK}/win" && zip -qr "${OUT}/Ohino-v${VERSION}-windows-x86_64.zip" Ohino-windows-x86_64)
 
   makensis -DVERSION="${VERSION}" \

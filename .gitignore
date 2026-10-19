@@ -12,3 +12,6 @@ Testing/
 *.user
 *.swp
 *.tmp
+
+# release artifacts (built by tools/package_release.sh)
+dist/
