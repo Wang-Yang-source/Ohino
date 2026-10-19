@@ -782,6 +782,8 @@ int FindOrAppendBrepVertex(ON_Brep& brep, const ON_3dPoint& pt, double tol)
   return v.m_vertex_index;
 }
 
+ON_2dPoint PullPointToSurfaceUv(const ON_Surface& srf, const ON_3dPoint& p);
+
 /**
  * Append a trimmed `ON_BrepFace` to `out_brep` bounded by the closed 2D UV polygon `uv_poly`
  * on `srf` (and optionally inner hole loops `inner_uv_loops`).
@@ -848,15 +850,49 @@ bool AppendTrimmedBrepFaceFromUvLoop(
     for (size_t i = 0; i < n; ++i)
     {
       const size_t j = (i + 1) % n;
-      ON_LineCurve* c3 = new ON_LineCurve(pts3d[i], pts3d[j]);
       const double len3 = pts3d[i].DistanceTo(pts3d[j]);
-      c3->SetDomain(0.0, std::max(1e-6, len3));
+      const double len2 = uvs[i].DistanceTo(uvs[j]);
+
+      // For curved non-planar surfaces, fit a smooth cubic (degree-3, 4-CV) 2D NURBS trim
+      // curve in (u, v) parameter space by pulling interior 3D chord stations onto `srf`
+      // (`PullPointToSurfaceUv`), paired with a cubic 3D edge curve on `srf`.
+      ON_Curve* c3 = nullptr;
+      ON_Curve* c2 = nullptr;
+      if (nullptr == ON_PlaneSurface::Cast(&srf) && len3 > tol * 4.0)
+      {
+        ON_NurbsCurve* nc2 = new ON_NurbsCurve(2, false, 4, 4);
+        nc2->MakeClampedUniformKnotVector(1.0);
+        nc2->SetDomain(0.0, std::max(1e-6, len2));
+        ON_NurbsCurve* nc3 = new ON_NurbsCurve(3, false, 4, 4);
+        nc3->MakeClampedUniformKnotVector(1.0);
+        nc3->SetDomain(0.0, std::max(1e-6, len3));
+        for (int k = 0; k < 4; ++k)
+        {
+          const double t = static_cast<double>(k) / 3.0;
+          const ON_2dPoint uv_k = (k == 0) ? uvs[i]
+                                : (k == 3) ? uvs[j]
+                                           : PullPointToSurfaceUv(srf, (1.0 - t) * pts3d[i] + t * pts3d[j]);
+          nc2->SetCV(k, ON_3dPoint(uv_k.x, uv_k.y, 0.0));
+          const ON_3dPoint p3_k = (k == 0) ? pts3d[i]
+                                : (k == 3) ? pts3d[j]
+                                           : srf.PointAt(uv_k.x, uv_k.y);
+          nc3->SetCV(k, p3_k);
+        }
+        c2 = nc2;
+        c3 = nc3;
+      }
+      else
+      {
+        ON_LineCurve* lc3 = new ON_LineCurve(pts3d[i], pts3d[j]);
+        lc3->SetDomain(0.0, std::max(1e-6, len3));
+        ON_LineCurve* lc2 = new ON_LineCurve(ON_2dPoint(uvs[i]), ON_2dPoint(uvs[j]));
+        lc2->SetDomain(0.0, std::max(1e-6, len2));
+        c3 = lc3;
+        c2 = lc2;
+      }
+
       const int c3i = out_brep.AddEdgeCurve(c3);
       ON_BrepEdge& edge = out_brep.NewEdge(out_brep.m_V[vis[i]], out_brep.m_V[vis[j]], c3i, nullptr, tol);
-
-      ON_LineCurve* c2 = new ON_LineCurve(ON_2dPoint(uvs[i]), ON_2dPoint(uvs[j]));
-      const double len2 = uvs[i].DistanceTo(uvs[j]);
-      c2->SetDomain(0.0, std::max(1e-6, len2));
       const int c2i = out_brep.AddTrimCurve(c2);
       ON_BrepTrim& trim = out_brep.NewTrim(edge, false, loop, c2i);
       trim.m_type = ON_BrepTrim::mated;
@@ -1611,5 +1647,175 @@ TL_FUNCTION bool TL_FilletBrepEdge(
   }
   fmesh->ComputeFaceNormals();
   cyl_face.SetMesh(ON::render_mesh, fmesh);
+  return true;
+}
+
+TL_FUNCTION bool TL_VariableFilletBrepEdge(
+  const ON_Brep& brep,
+  int edge_index,
+  double radius_start,
+  double radius_end,
+  ON_Brep& out_brep,
+  double tolerance
+)
+{
+  out_brep.Destroy();
+  if (radius_start <= 1e-9 || radius_end <= 1e-9 || brep.m_F.Count() <= 0)
+    return false;
+
+  ON_3dPoint e0, e1;
+  ON_3dVector axis, t0, t1, n0, n1;
+  double theta = 0.0;
+  if (!ComputeEdgeWedgeDirections(brep, edge_index, e0, e1, axis, t0, t1, n0, n1, theta))
+    return false;
+
+  const double half_th = 0.5 * theta;
+  const double tan_h = std::tan(half_th);
+  const double sin_h = std::sin(half_th);
+  if (std::fabs(tan_h) <= 1e-9 || std::fabs(sin_h) <= 1e-9)
+    return false;
+
+  const double s0 = radius_start / tan_h;
+  const double s1 = radius_end   / tan_h;
+  const double d0 = radius_start / sin_h;
+  const double d1 = radius_end   / sin_h;
+
+  ON_3dVector bisector = t0 + t1;
+  if (!bisector.Unitize())
+    return false;
+
+  // The four corners of the oblique chord plane cutting through the two linearly varying
+  // setback lines `A(u) = E(u) + s(u)*t0` and `B(u) = E(u) + s(u)*t1`:
+  const ON_3dPoint a0 = e0 + t0 * s0;
+  const ON_3dPoint b0 = e0 + t1 * s0;
+  const ON_3dPoint a1 = e1 + t0 * s1;
+  const ON_3dPoint b1 = e1 + t1 * s1;
+
+  // Note: `a0, b0, b1, a1` are coplanar because `b0 - a0 = s0*(t1 - t0)` is parallel to
+  // `b1 - a1 = s1*(t1 - t0)`!
+  ON_3dVector chord_n = ON_CrossProduct(b0 - a0, a1 - a0);
+  if (!chord_n.Unitize())
+    return false;
+  const ON_3dPoint chord_center = 0.25 * (a0 + b0 + a1 + b1);
+  const ON_3dPoint mid_e = 0.5 * (e0 + e1);
+  // Orient `chord_n` to point INTO the surviving solid (away from the cut corner `mid_e`)
+  if (ON_DotProduct(chord_n, chord_center - mid_e) < 0.0)
+    chord_n = -chord_n;
+
+  const ON_Plane chord_plane(chord_center, chord_n);
+  ON_Brep trimmed_base;
+  if (TL_SplitBrepWithPlane(brep, chord_plane, /*cap_section=*/false, &trimmed_base, nullptr, nullptr, tolerance) <= 0)
+    return false;
+
+  out_brep = trimmed_base;
+
+  // Rolling-ball axis endpoints and radial basis
+  const ON_3dPoint c0 = e0 + bisector * d0;
+  const ON_3dPoint c1 = e1 + bisector * d1;
+  ON_3dVector r_a = a0 - c0;
+  ON_3dVector r_b = b0 - c0;
+  if (!r_a.Unitize() || !r_b.Unitize())
+    return false;
+
+  const double sweep_ang = std::acos(std::clamp(ON_DotProduct(r_a, r_b), -1.0, 1.0));
+  ON_3dVector r_ortho = r_b - r_a * ON_DotProduct(r_b, r_a);
+  if (!r_ortho.Unitize())
+    return false;
+
+  const int arc_segs = 16;
+  std::vector<ON_3dPoint> arc0(arc_segs + 1), arc1(arc_segs + 1);
+  for (int k = 0; k <= arc_segs; ++k)
+  {
+    const double v = static_cast<double>(k) / static_cast<double>(arc_segs);
+    const double ang = v * sweep_ang;
+    const ON_3dVector dir = r_a * std::cos(ang) + r_ortho * std::sin(ang);
+    arc0[(size_t)k] = c0 + dir * radius_start;
+    arc1[(size_t)k] = c1 + dir * radius_end;
+  }
+
+  // Build a degree-(1, 3) ruled-arc NURBS transition surface `S(u, v) = (1-u)*arc0(v) + u*arc1(v)`
+  ON_NurbsSurface* var_srf = ON_NurbsSurface::New(3, false, 2, 4, 2, arc_segs + 1);
+  var_srf->MakeClampedUniformKnotVector(0, 1.0);
+  var_srf->MakeClampedUniformKnotVector(1, 1.0);
+  var_srf->SetDomain(0, 0.0, 1.0);
+  var_srf->SetDomain(1, 0.0, 1.0);
+  for (int k = 0; k <= arc_segs; ++k)
+  {
+    var_srf->SetCV(0, k, arc0[(size_t)k]);
+    var_srf->SetCV(1, k, arc1[(size_t)k]);
+  }
+
+  const int si = out_brep.AddSurface(var_srf);
+  ON_BrepFace& var_face = out_brep.NewFace(si);
+  ON_BrepLoop& loop = out_brep.NewLoop(ON_BrepLoop::outer, var_face);
+  const ON_2dPoint uvs[4] = {
+    ON_2dPoint(0.0, 0.0), ON_2dPoint(0.0, 1.0),
+    ON_2dPoint(1.0, 1.0), ON_2dPoint(1.0, 0.0)
+  };
+  const ON_3dPoint corners3d[4] = { arc0.front(), arc0.back(), arc1.back(), arc1.front() };
+  int vis[4];
+  for (int i = 0; i < 4; ++i)
+    vis[i] = FindOrAppendBrepVertex(out_brep, corners3d[i], tolerance);
+  for (int i = 0; i < 4; ++i)
+  {
+    const int j = (i + 1) % 4;
+    ON_LineCurve* c3 = new ON_LineCurve(corners3d[i], corners3d[j]);
+    const int c3i = out_brep.AddEdgeCurve(c3);
+    ON_BrepEdge& e = out_brep.NewEdge(out_brep.m_V[vis[i]], out_brep.m_V[vis[j]], c3i, nullptr, tolerance);
+    ON_LineCurve* c2 = new ON_LineCurve(uvs[i], uvs[j]);
+    const int c2i = out_brep.AddTrimCurve(c2);
+    ON_BrepTrim& tr = out_brep.NewTrim(e, false, loop, c2i);
+    tr.m_type = ON_BrepTrim::mated;
+  }
+
+  // Attach watertight render mesh (conical rolling-ball strip + both end-cap circular segments)
+  ON_Mesh* fmesh = new ON_Mesh();
+  const ON_3dVector out_dir = -bisector;
+  for (int k = 0; k <= arc_segs; ++k)
+  {
+    fmesh->m_V.Append(ON_3fPoint(arc0[(size_t)k]));
+    fmesh->m_V.Append(ON_3fPoint(arc1[(size_t)k]));
+  }
+  const ON_3dVector tri_n = ON_CrossProduct(arc0[1] - arc0[0], arc1[0] - arc0[0]);
+  const bool flip_strip = (ON_DotProduct(tri_n, out_dir) < 0.0);
+  for (int k = 0; k < arc_segs; ++k)
+  {
+    const int i00 = 2 * k, i01 = 2 * k + 1, i10 = 2 * (k + 1), i11 = 2 * (k + 1) + 1;
+    ON_MeshFace mf1, mf2;
+    if (!flip_strip)
+    {
+      mf1.vi[0] = i00; mf1.vi[1] = i10; mf1.vi[2] = i11; mf1.vi[3] = i11;
+      mf2.vi[0] = i00; mf2.vi[1] = i11; mf2.vi[2] = i01; mf2.vi[3] = i01;
+    }
+    else
+    {
+      mf1.vi[0] = i00; mf1.vi[1] = i11; mf1.vi[2] = i10; mf1.vi[3] = i10;
+      mf2.vi[0] = i00; mf2.vi[1] = i01; mf2.vi[2] = i11; mf2.vi[3] = i11;
+    }
+    fmesh->m_F.Append(mf1);
+    fmesh->m_F.Append(mf2);
+  }
+  for (int k = 1; k + 1 <= arc_segs; ++k)
+  {
+    const int v0 = 0, v1 = 2 * k, v2 = 2 * (k + 1);
+    const ON_3dVector cn0 = ON_CrossProduct(arc0[(size_t)k] - arc0[0], arc0[(size_t)(k + 1)] - arc0[0]);
+    ON_MeshFace cap0;
+    if (ON_DotProduct(cn0, -axis) >= 0.0)
+    { cap0.vi[0] = v0; cap0.vi[1] = v1; cap0.vi[2] = v2; cap0.vi[3] = v2; }
+    else
+    { cap0.vi[0] = v0; cap0.vi[1] = v2; cap0.vi[2] = v1; cap0.vi[3] = v1; }
+    fmesh->m_F.Append(cap0);
+
+    const int u0 = 1, u1 = 2 * k + 1, u2 = 2 * (k + 1) + 1;
+    const ON_3dVector cn1 = ON_CrossProduct(arc1[(size_t)k] - arc1[0], arc1[(size_t)(k + 1)] - arc1[0]);
+    ON_MeshFace cap1;
+    if (ON_DotProduct(cn1, axis) >= 0.0)
+    { cap1.vi[0] = u0; cap1.vi[1] = u1; cap1.vi[2] = u2; cap1.vi[3] = u2; }
+    else
+    { cap1.vi[0] = u0; cap1.vi[1] = u2; cap1.vi[2] = u1; cap1.vi[3] = u1; }
+    fmesh->m_F.Append(cap1);
+  }
+  fmesh->ComputeFaceNormals();
+  var_face.SetMesh(ON::render_mesh, fmesh);
   return true;
 }

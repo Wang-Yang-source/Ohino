@@ -73,3 +73,8 @@
   - [x] `TL_ChamferBrepEdge` / `TL_FilletBrepEdge`：Brep 实体棱边精确倒角面与等半径滚球圆柱 NURBS 圆角面（`ON_RevSurface::GetNurbForm` + 端盖扇形水密缝合），`10×10×10` 立方体实测体积 `V_chamfer = 980.0000`（解析解 `980.0000`）、`V_fillet = 991.3655`（解析解 `991.4159`）
   - [x] `TL_SelectSceneObjectsInRect`：支持 Rhino 标准左→右 Window 框选（全包含，蓝色框）与右→左 Crossing 交选（相交即选，绿色框），选中对象在四视图实时绘制黄色高亮线框
   - [x] 拖拽 3D Gumball X/Y/Z 轴实时平移选中对象并自动压入 `undo_stack`；新增 `_Move`、`_Rotate`、`_Scale` 命令；Grasshopper 目录扩至 **190** 个算子（新增 `Fillet Edge`、`Chamfer Edge`），`opentl_tests` **21 组 3020 项断言 0 失败**，`ctest 5/5` 全过
+- [x] **Stage 19：变半径滚球圆角、弯曲面三次 2D NURBS 参数域裁剪、3D 网格射线求交与 OBJ/STL 工业格式导入导出**
+  - [x] `TL_VariableFilletBrepEdge`：Brep 棱边变半径滚球圆角（`r_start -> r_end` 线性过渡），构建 (1,3) 阶 NURBS 过渡面与两端圆弓封口，`10×10×10` 立方体 `r = 1 -> 3` 实测水密体积 `V = 990.6459`（解析解 `990.7006`），接入 Grasshopper `Variable Fillet Edge`（总计 **191/191** 算子）
+  - [x] 升级 `AppendTrimmedBrepFaceFromUvLoop`：对非平面弯曲曲面自动拟合三次（4 控制点）2D `(u, v)` NURBS 裁剪曲线与 3D 边缘曲线
+  - [x] `TL_RaycastMesh`：AABB 快速剔除 + Möller–Trumbore 精确射线-三角形/四边形求交（返回最近距离 `t`、命中点、面索引与外法向）
+  - [x] `TL_ExportMeshOBJ` / `TL_ImportMeshOBJ` 与 `TL_ExportMeshSTL` / `TL_ImportMeshSTL`（二进制 + ASCII 自动识别与顶点焊接），Studio 新增 `_ExportObj` / `_ExportStl` 命令，无损体积往返校验通过（`V = 980.0000`），`opentl_tests` **21 组 3034 项断言 0 失败**，`ctest 5/5` 全过

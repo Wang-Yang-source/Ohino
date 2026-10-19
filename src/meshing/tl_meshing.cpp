@@ -3,6 +3,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
+#include <fstream>
+#include <iomanip>
+#include <sstream>
 
 namespace {
 
@@ -771,4 +776,434 @@ TL_FUNCTION int TL_ExtractBrepEdgePolylines(
     }
   }
   return added;
+}
+
+namespace {
+
+bool RayIntersectsTriangleMT(
+  const ON_3dPoint& orig,
+  const ON_3dVector& dir,
+  const ON_3dPoint& v0,
+  const ON_3dPoint& v1,
+  const ON_3dPoint& v2,
+  double& out_t,
+  ON_3dVector& out_normal
+)
+{
+  const ON_3dVector e1 = v1 - v0;
+  const ON_3dVector e2 = v2 - v0;
+  const ON_3dVector pvec = ON_CrossProduct(dir, e2);
+  const double det = ON_DotProduct(e1, pvec);
+  if (std::fabs(det) <= 1e-14)
+    return false;
+  const double inv_det = 1.0 / det;
+  const ON_3dVector tvec = orig - v0;
+  const double u = ON_DotProduct(tvec, pvec) * inv_det;
+  if (u < -1e-9 || u > 1.0 + 1e-9)
+    return false;
+  const ON_3dVector qvec = ON_CrossProduct(tvec, e1);
+  const double v = ON_DotProduct(dir, qvec) * inv_det;
+  if (v < -1e-9 || u + v > 1.0 + 1e-9)
+    return false;
+  const double t = ON_DotProduct(e2, qvec) * inv_det;
+  if (t < 0.0)
+    return false;
+  out_t = t;
+  out_normal = ON_CrossProduct(e1, e2);
+  out_normal.Unitize();
+  return true;
+}
+
+bool RayIntersectsAabb(
+  const ON_3dPoint& orig,
+  const ON_3dVector& dir,
+  const ON_BoundingBox& box
+)
+{
+  if (!box.IsValid())
+    return false;
+  double tmin = 0.0;
+  double tmax = 1e300;
+  const double o[3] = { orig.x, orig.y, orig.z };
+  const double d[3] = { dir.x, dir.y, dir.z };
+  const double bmin[3] = { box.m_min.x - 1e-7, box.m_min.y - 1e-7, box.m_min.z - 1e-7 };
+  const double bmax[3] = { box.m_max.x + 1e-7, box.m_max.y + 1e-7, box.m_max.z + 1e-7 };
+  for (int a = 0; a < 3; ++a)
+  {
+    if (std::fabs(d[a]) <= 1e-15)
+    {
+      if (o[a] < bmin[a] || o[a] > bmax[a]) return false;
+    }
+    else
+    {
+      double t1 = (bmin[a] - o[a]) / d[a];
+      double t2 = (bmax[a] - o[a]) / d[a];
+      if (t1 > t2) std::swap(t1, t2);
+      tmin = std::max(tmin, t1);
+      tmax = std::min(tmax, t2);
+      if (tmin > tmax) return false;
+    }
+  }
+  return true;
+}
+
+} // namespace
+
+TL_FUNCTION bool TL_RaycastMesh(
+  const ON_Mesh& mesh,
+  const ON_Line& ray,
+  double* out_ray_t,
+  ON_3dPoint* out_hit_point,
+  int* out_face_index,
+  ON_3dVector* out_hit_normal
+)
+{
+  const int vcount = mesh.VertexCount();
+  const int fcount = mesh.m_F.Count();
+  if (vcount <= 0 || fcount <= 0)
+    return false;
+
+  const ON_3dPoint orig = ray.from;
+  const ON_3dVector dir = ray.to - ray.from;
+  if (dir.LengthSquared() <= 1e-24)
+    return false;
+
+  ON_BoundingBox mb;
+  if (mesh.GetBoundingBox(mb) && mb.IsValid() && !RayIntersectsAabb(orig, dir, mb))
+    return false;
+
+  double best_t = 1e300;
+  int best_fi = -1;
+  ON_3dVector best_n = ON_3dVector::ZAxis;
+
+  for (int fi = 0; fi < fcount; ++fi)
+  {
+    const ON_MeshFace& f = mesh.m_F[fi];
+    if (f.vi[0] < 0 || f.vi[0] >= vcount ||
+        f.vi[1] < 0 || f.vi[1] >= vcount ||
+        f.vi[2] < 0 || f.vi[2] >= vcount)
+      continue;
+
+    const ON_3dPoint p0(mesh.m_V[f.vi[0]]);
+    const ON_3dPoint p1(mesh.m_V[f.vi[1]]);
+    const ON_3dPoint p2(mesh.m_V[f.vi[2]]);
+    double t = 0.0;
+    ON_3dVector n;
+    if (RayIntersectsTriangleMT(orig, dir, p0, p1, p2, t, n) && t < best_t)
+    {
+      best_t = t;
+      best_fi = fi;
+      best_n = n;
+    }
+    if (f.IsQuad() && f.vi[3] >= 0 && f.vi[3] < vcount)
+    {
+      const ON_3dPoint p3(mesh.m_V[f.vi[3]]);
+      if (RayIntersectsTriangleMT(orig, dir, p0, p2, p3, t, n) && t < best_t)
+      {
+        best_t = t;
+        best_fi = fi;
+        best_n = n;
+      }
+    }
+  }
+
+  if (best_fi < 0)
+    return false;
+
+  if (nullptr != out_ray_t) *out_ray_t = best_t;
+  if (nullptr != out_hit_point) *out_hit_point = orig + dir * best_t;
+  if (nullptr != out_face_index) *out_face_index = best_fi;
+  if (nullptr != out_hit_normal) *out_hit_normal = best_n;
+  return true;
+}
+
+TL_FUNCTION bool TL_ExportMeshOBJ(
+  const ON_Mesh& mesh,
+  const std::string& file_path,
+  std::string* error_out
+)
+{
+  std::ofstream ofs(file_path, std::ios::out | std::ios::trunc);
+  if (!ofs.is_open())
+  {
+    if (error_out) *error_out = "Cannot open OBJ file for writing: " + file_path;
+    return false;
+  }
+  ofs << "# Ohino (OpenTL Studio) Wavefront OBJ Export\n";
+  ofs << std::fixed << std::setprecision(8);
+  const int vcount = mesh.VertexCount();
+  for (int i = 0; i < vcount; ++i)
+  {
+    const ON_3dPoint p(mesh.m_V[i]);
+    ofs << "v " << p.x << " " << p.y << " " << p.z << "\n";
+  }
+  const bool has_normals = (mesh.m_N.Count() == vcount);
+  if (has_normals)
+  {
+    for (int i = 0; i < vcount; ++i)
+    {
+      const ON_3fVector& n = mesh.m_N[i];
+      ofs << "vn " << n.x << " " << n.y << " " << n.z << "\n";
+    }
+  }
+  const int fcount = mesh.m_F.Count();
+  for (int fi = 0; fi < fcount; ++fi)
+  {
+    const ON_MeshFace& f = mesh.m_F[fi];
+    const int a = f.vi[0] + 1, b = f.vi[1] + 1, c = f.vi[2] + 1, d = f.vi[3] + 1;
+    if (f.IsQuad())
+      ofs << "f " << a << " " << b << " " << c << " " << d << "\n";
+    else
+      ofs << "f " << a << " " << b << " " << c << "\n";
+  }
+  return ofs.good();
+}
+
+TL_FUNCTION bool TL_ImportMeshOBJ(
+  const std::string& file_path,
+  ON_Mesh& out_mesh,
+  std::string* error_out
+)
+{
+  out_mesh.Destroy();
+  std::ifstream ifs(file_path);
+  if (!ifs.is_open())
+  {
+    if (error_out) *error_out = "Cannot open OBJ file for reading: " + file_path;
+    return false;
+  }
+
+  auto parse_face_vi = [](const std::string& tok, int vcount) -> int {
+    const size_t slash = tok.find('/');
+    const std::string sub = (slash == std::string::npos) ? tok : tok.substr(0, slash);
+    int idx = std::stoi(sub);
+    if (idx < 0) idx = vcount + idx + 1;
+    return idx - 1;
+  };
+
+  std::string line;
+  while (std::getline(ifs, line))
+  {
+    std::istringstream iss(line);
+    std::string tag;
+    if (!(iss >> tag)) continue;
+    if (tag == "v")
+    {
+      double x = 0.0, y = 0.0, z = 0.0;
+      if (iss >> x >> y >> z)
+        out_mesh.m_V.Append(ON_3fPoint(static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)));
+    }
+    else if (tag == "vn")
+    {
+      double nx = 0.0, ny = 0.0, nz = 0.0;
+      if (iss >> nx >> ny >> nz)
+        out_mesh.m_N.Append(ON_3fVector(static_cast<float>(nx), static_cast<float>(ny), static_cast<float>(nz)));
+    }
+    else if (tag == "f")
+    {
+      std::vector<int> vis;
+      std::string tok;
+      while (iss >> tok)
+        vis.push_back(parse_face_vi(tok, out_mesh.m_V.Count()));
+      if (vis.size() == 3)
+      {
+        ON_MeshFace mf;
+        mf.vi[0] = vis[0]; mf.vi[1] = vis[1]; mf.vi[2] = vis[2]; mf.vi[3] = vis[2];
+        out_mesh.m_F.Append(mf);
+      }
+      else if (vis.size() == 4)
+      {
+        ON_MeshFace mf;
+        mf.vi[0] = vis[0]; mf.vi[1] = vis[1]; mf.vi[2] = vis[2]; mf.vi[3] = vis[3];
+        out_mesh.m_F.Append(mf);
+      }
+      else if (vis.size() > 4)
+      {
+        for (size_t k = 1; k + 1 < vis.size(); ++k)
+        {
+          ON_MeshFace mf;
+          mf.vi[0] = vis[0]; mf.vi[1] = vis[k]; mf.vi[2] = vis[k + 1]; mf.vi[3] = vis[k + 1];
+          out_mesh.m_F.Append(mf);
+        }
+      }
+    }
+  }
+  if (out_mesh.m_F.Count() <= 0)
+  {
+    if (error_out) *error_out = "OBJ file contained no valid faces";
+    return false;
+  }
+  out_mesh.ComputeFaceNormals();
+  if (out_mesh.m_N.Count() != out_mesh.VertexCount())
+    out_mesh.ComputeVertexNormals();
+  return true;
+}
+
+TL_FUNCTION bool TL_ExportMeshSTL(
+  const ON_Mesh& mesh,
+  const std::string& file_path,
+  bool binary,
+  std::string* error_out
+)
+{
+  struct StlTri { ON_3fVector n; ON_3fPoint a, b, c; };
+  std::vector<StlTri> tris;
+  const int vcount = mesh.VertexCount();
+  for (int fi = 0; fi < mesh.m_F.Count(); ++fi)
+  {
+    const ON_MeshFace& f = mesh.m_F[fi];
+    if (f.vi[0] < 0 || f.vi[0] >= vcount || f.vi[1] < 0 || f.vi[1] >= vcount || f.vi[2] < 0 || f.vi[2] >= vcount)
+      continue;
+    auto push_tri = [&](int i0, int i1, int i2) {
+      const ON_3dPoint p0(mesh.m_V[i0]), p1(mesh.m_V[i1]), p2(mesh.m_V[i2]);
+      ON_3dVector n = ON_CrossProduct(p1 - p0, p2 - p0);
+      n.Unitize();
+      tris.push_back({ ON_3fVector(n), mesh.m_V[i0], mesh.m_V[i1], mesh.m_V[i2] });
+    };
+    push_tri(f.vi[0], f.vi[1], f.vi[2]);
+    if (f.IsQuad() && f.vi[3] >= 0 && f.vi[3] < vcount)
+      push_tri(f.vi[0], f.vi[2], f.vi[3]);
+  }
+
+  if (binary)
+  {
+    std::ofstream ofs(file_path, std::ios::out | std::ios::binary | std::ios::trunc);
+    if (!ofs.is_open())
+    {
+      if (error_out) *error_out = "Cannot open binary STL file for writing: " + file_path;
+      return false;
+    }
+    char header[80];
+    std::memset(header, 0, sizeof(header));
+    std::snprintf(header, sizeof(header), "Ohino OpenTL Binary STL (%zu triangles)", tris.size());
+    ofs.write(header, 80);
+    const uint32_t count32 = static_cast<uint32_t>(tris.size());
+    ofs.write(reinterpret_cast<const char*>(&count32), 4);
+    const uint16_t attr = 0;
+    for (const StlTri& t : tris)
+    {
+      const float buf[12] = {
+        t.n.x, t.n.y, t.n.z,
+        t.a.x, t.a.y, t.a.z,
+        t.b.x, t.b.y, t.b.z,
+        t.c.x, t.c.y, t.c.z
+      };
+      ofs.write(reinterpret_cast<const char*>(buf), 48);
+      ofs.write(reinterpret_cast<const char*>(&attr), 2);
+    }
+    return ofs.good();
+  }
+
+  std::ofstream ofs(file_path, std::ios::out | std::ios::trunc);
+  if (!ofs.is_open())
+  {
+    if (error_out) *error_out = "Cannot open ASCII STL file for writing: " + file_path;
+    return false;
+  }
+  ofs << "solid ohino\n" << std::scientific << std::setprecision(6);
+  for (const StlTri& t : tris)
+  {
+    ofs << "  facet normal " << t.n.x << " " << t.n.y << " " << t.n.z << "\n"
+        << "    outer loop\n"
+        << "      vertex " << t.a.x << " " << t.a.y << " " << t.a.z << "\n"
+        << "      vertex " << t.b.x << " " << t.b.y << " " << t.b.z << "\n"
+        << "      vertex " << t.c.x << " " << t.c.y << " " << t.c.z << "\n"
+        << "    endloop\n"
+        << "  endfacet\n";
+  }
+  ofs << "endsolid ohino\n";
+  return ofs.good();
+}
+
+TL_FUNCTION bool TL_ImportMeshSTL(
+  const std::string& file_path,
+  ON_Mesh& out_mesh,
+  std::string* error_out
+)
+{
+  out_mesh.Destroy();
+  std::ifstream ifs(file_path, std::ios::in | std::ios::binary);
+  if (!ifs.is_open())
+  {
+    if (error_out) *error_out = "Cannot open STL file for reading: " + file_path;
+    return false;
+  }
+  ifs.seekg(0, std::ios::end);
+  const std::streamoff fsize = ifs.tellg();
+  ifs.seekg(0, std::ios::beg);
+
+  auto weld_or_add = [&](const ON_3fPoint& pt) -> int {
+    for (int i = 0; i < out_mesh.m_V.Count(); ++i)
+    {
+      const ON_3fPoint& v = out_mesh.m_V[i];
+      const float dx = v.x - pt.x, dy = v.y - pt.y, dz = v.z - pt.z;
+      if (dx * dx + dy * dy + dz * dz <= 1e-12f)
+        return i;
+    }
+    out_mesh.m_V.Append(pt);
+    return out_mesh.m_V.Count() - 1;
+  };
+
+  if (fsize >= 84)
+  {
+    char hdr[80];
+    uint32_t tri_count = 0;
+    ifs.read(hdr, 80);
+    ifs.read(reinterpret_cast<char*>(&tri_count), 4);
+    if (static_cast<std::streamoff>(84 + static_cast<uint64_t>(tri_count) * 50) == fsize)
+    {
+      for (uint32_t i = 0; i < tri_count; ++i)
+      {
+        float buf[12];
+        uint16_t attr = 0;
+        ifs.read(reinterpret_cast<char*>(buf), 48);
+        ifs.read(reinterpret_cast<char*>(&attr), 2);
+        const int v0 = weld_or_add(ON_3fPoint(buf[3], buf[4], buf[5]));
+        const int v1 = weld_or_add(ON_3fPoint(buf[6], buf[7], buf[8]));
+        const int v2 = weld_or_add(ON_3fPoint(buf[9], buf[10], buf[11]));
+        ON_MeshFace mf;
+        mf.vi[0] = v0; mf.vi[1] = v1; mf.vi[2] = v2; mf.vi[3] = v2;
+        out_mesh.m_F.Append(mf);
+      }
+      out_mesh.ComputeFaceNormals();
+      out_mesh.ComputeVertexNormals();
+      return out_mesh.m_F.Count() > 0;
+    }
+  }
+
+  // Fallback: ASCII STL
+  ifs.clear();
+  ifs.seekg(0, std::ios::beg);
+  std::string tok;
+  ON_3fPoint tri[3];
+  int v_in_tri = 0;
+  while (ifs >> tok)
+  {
+    if (tok == "vertex")
+    {
+      float x = 0.0f, y = 0.0f, z = 0.0f;
+      if (ifs >> x >> y >> z)
+      {
+        tri[v_in_tri++] = ON_3fPoint(x, y, z);
+        if (v_in_tri == 3)
+        {
+          const int v0 = weld_or_add(tri[0]);
+          const int v1 = weld_or_add(tri[1]);
+          const int v2 = weld_or_add(tri[2]);
+          ON_MeshFace mf;
+          mf.vi[0] = v0; mf.vi[1] = v1; mf.vi[2] = v2; mf.vi[3] = v2;
+          out_mesh.m_F.Append(mf);
+          v_in_tri = 0;
+        }
+      }
+    }
+  }
+  if (out_mesh.m_F.Count() <= 0)
+  {
+    if (error_out) *error_out = "STL file contained no valid facets";
+    return false;
+  }
+  out_mesh.ComputeFaceNormals();
+  out_mesh.ComputeVertexNormals();
+  return true;
 }

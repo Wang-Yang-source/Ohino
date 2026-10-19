@@ -11,6 +11,7 @@
 
 #include "../tl_export.h"
 
+#include <string>
 #include <vector>
 
 /**
@@ -138,4 +139,50 @@ TL_FUNCTION int TL_ExtractBrepEdgePolylines(
   const ON_Brep& brep,
   std::vector<std::vector<ON_3dPoint>>& out_polylines,
   int curved_edge_samples = 12
+);
+
+/**
+ * Ray-cast `ray` (`P(t) = ray.from + t * (ray.to - ray.from)`, `t >= 0`) against all
+ * triangles/quads of `mesh` using an axis-aligned bounding-box fast reject + Möller–Trumbore
+ * exact ray-triangle test.
+ *
+ * Returns true when at least one triangle is hit, writing the nearest ray parameter (`t >= 0`),
+ * 3D hit point, face index, and outward unit triangle normal.
+ */
+TL_FUNCTION bool TL_RaycastMesh(
+  const ON_Mesh& mesh,
+  const ON_Line& ray,
+  double* out_ray_t = nullptr,
+  ON_3dPoint* out_hit_point = nullptr,
+  int* out_face_index = nullptr,
+  ON_3dVector* out_hit_normal = nullptr
+);
+
+/**
+ * Export or import a triangle/quad `ON_Mesh` to/from Wavefront `.obj` (`v` / `vn` / `f`)
+ * or binary/ASCII `.stl` (3D printing & CAD mesh exchange).
+ */
+TL_FUNCTION bool TL_ExportMeshOBJ(
+  const ON_Mesh& mesh,
+  const std::string& file_path,
+  std::string* error_out = nullptr
+);
+
+TL_FUNCTION bool TL_ImportMeshOBJ(
+  const std::string& file_path,
+  ON_Mesh& out_mesh,
+  std::string* error_out = nullptr
+);
+
+TL_FUNCTION bool TL_ExportMeshSTL(
+  const ON_Mesh& mesh,
+  const std::string& file_path,
+  bool binary = true,
+  std::string* error_out = nullptr
+);
+
+TL_FUNCTION bool TL_ImportMeshSTL(
+  const std::string& file_path,
+  ON_Mesh& out_mesh,
+  std::string* error_out = nullptr
 );

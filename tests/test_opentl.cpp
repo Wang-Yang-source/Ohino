@@ -3029,7 +3029,7 @@ void TestGrasshopperAndStudioGui() {
     // (a) Instantiate and evaluate every single battery in the 182-component catalog
     TL_GhDocument all_doc;
     const auto& specs = TL_GhComponentCatalog::All();
-    CHECK_EQ_INT((int)specs.size(), 190);
+    CHECK_EQ_INT((int)specs.size(), 191);
     int instantiated = 0;
     for (size_t i = 0; i < specs.size(); ++i) {
       const int nidx = all_doc.AddComponent(specs[i].name, 40.0f + (float)(i % 8) * 90.0f,
@@ -3410,6 +3410,47 @@ void TestStage17ModelingAndPicking() {
       CHECK_NEAR(v_fil, v_expected, 0.15);
       std::printf("   Brep edge chamfer V=%.4f (exact 980.0000), fillet V=%.4f (exact %.4f)\n",
                   v_chm, v_fil, v_expected);
+
+      // ---- Stage 19: Variable-radius rolling-ball fillet (`TL_VariableFilletBrepEdge`) ----
+      // Radius ramps from r0 = 1.0 to r1 = 3.0 along L = 10:
+      // Exact analytical volume = 1000 - L * (1 - pi/4) * (r0^2 + r0*r1 + r1^2) / 3
+      //                         = 1000 - 10 * (1 - pi/4) * (1 + 3 + 9) / 3 = 990.700587
+      ON_Brep vfil;
+      CHECK(TL_VariableFilletBrepEdge(*box, 0, 1.0, 3.0, vfil));
+      CHECK(vfil.m_F.Count() >= 6);
+      ON_Mesh vfil_mesh;
+      TL_ExtractBrepMesh(vfil, vfil_mesh, false);
+      const double v_var = std::fabs(TL_MeshSignedVolume(vfil_mesh));
+      const double v_var_expected = 1000.0 - 10.0 * (1.0 - 0.25 * ON_PI) * (1.0 + 3.0 + 9.0) / 3.0;
+      CHECK_NEAR(v_var, v_var_expected, 0.20);
+      std::printf("   Brep variable fillet (r=1->3) V=%.4f (exact %.4f)\n", v_var, v_var_expected);
+
+      // ---- Stage 19: Mesh Raycast (`TL_RaycastMesh`) + OBJ / STL Export & Import Round-Trip ----
+      ON_Line hit_ray(ON_3dPoint(5.0, 5.0, 25.0), ON_3dPoint(5.0, 5.0, -25.0));
+      double ray_t = 0.0;
+      ON_3dPoint hit_pt = ON_3dPoint::Origin;
+      int hit_fi = -1;
+      ON_3dVector hit_n = ON_3dVector::ZeroVector;
+      CHECK(TL_RaycastMesh(chm_mesh, hit_ray, &ray_t, &hit_pt, &hit_fi, &hit_n));
+      CHECK_NEAR(hit_pt.z, 10.0, 1e-5);
+      CHECK(hit_fi >= 0);
+
+      ON_Line miss_ray(ON_3dPoint(50.0, 50.0, 25.0), ON_3dPoint(50.0, 50.0, -25.0));
+      CHECK(!TL_RaycastMesh(chm_mesh, miss_ray, &ray_t, &hit_pt, &hit_fi, &hit_n));
+
+      const std::string obj_path = "/tmp/ohino_stage19_test.obj";
+      const std::string stl_path = "/tmp/ohino_stage19_test.stl";
+      CHECK(TL_ExportMeshOBJ(chm_mesh, obj_path));
+      ON_Mesh obj_loaded;
+      CHECK(TL_ImportMeshOBJ(obj_path, obj_loaded));
+      CHECK_EQ_INT(obj_loaded.VertexCount(), chm_mesh.VertexCount());
+      CHECK_NEAR(std::fabs(TL_MeshSignedVolume(obj_loaded)), 980.0, 1e-3);
+
+      CHECK(TL_ExportMeshSTL(chm_mesh, stl_path, true));
+      ON_Mesh stl_loaded;
+      CHECK(TL_ImportMeshSTL(stl_path, stl_loaded));
+      CHECK_NEAR(std::fabs(TL_MeshSignedVolume(stl_loaded)), 980.0, 1e-3);
+
       delete box;
     }
   }

@@ -157,3 +157,23 @@ TL_FUNCTION bool TL_FilletBrepEdge(
   ON_Brep& out_brep,
   double tolerance = 1e-6
 );
+
+/**
+ * Variable-radius rolling-ball fillet (`TL_VariableFilletBrepEdge`) along sharp `edge_index`
+ * of a planar-faced `ON_Brep` solid, smoothly interpolating the rolling-ball radius from
+ * `radius_start` at `edge.PointAtStart()` to `radius_end` at `edge.PointAtEnd()`.
+ *
+ * Constructs a degree-(1,3) NURBS transition surface (`ON_NurbsSurface`) tangent to both
+ * adjacent faces along the linearly varying setback lines, trims the adjacent faces in `(u, v)`
+ * space using cubic 2D NURBS trim curves (`ON_NurbsCurve` degree 3), and seals the two end-cap
+ * circular segments so `out_brep` is a closed watertight solid with analytical volume:
+ *   V = V_0 - L * (1 - pi/4) * (r0^2 + r0*r1 + r1^2) / 3.
+ */
+TL_FUNCTION bool TL_VariableFilletBrepEdge(
+  const ON_Brep& brep,
+  int edge_index,
+  double radius_start,
+  double radius_end,
+  ON_Brep& out_brep,
+  double tolerance = 1e-6
+);

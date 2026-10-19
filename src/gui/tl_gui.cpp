@@ -1135,6 +1135,37 @@ bool TL_ExecuteStudioCommand(
     return ok;
   }
 
+  if (cmd == "EXPORTOBJ" || cmd == "EXPORTSTL") {
+    std::string path;
+    iss >> path;
+    if (path.empty()) path = (cmd == "EXPORTOBJ") ? "ohino_studio.obj" : "ohino_studio.stl";
+    ON_Mesh m;
+    if (gh_doc && scene)
+    {
+      opentl::mvp::SceneDocument tmp = *scene;
+      std::vector<ON_Mesh*> baked;
+      gh_doc->BakeToScene(tmp, baked, nullptr);
+      for (ON_Mesh* bm : baked)
+      {
+        if (bm && bm->m_F.Count() > 0 && m.m_F.Count() == 0) m = *bm;
+        delete bm;
+      }
+    }
+    if (m.m_F.Count() == 0)
+    {
+      const ON_3dPoint c[8] = {
+        ON_3dPoint(-5, -5, 0), ON_3dPoint(5, -5, 0), ON_3dPoint(5, 5, 0), ON_3dPoint(-5, 5, 0),
+        ON_3dPoint(-5, -5, 8), ON_3dPoint(5, -5, 8), ON_3dPoint(5, 5, 8), ON_3dPoint(-5, 5, 8)
+      };
+      if (ON_Brep* b = ON_BrepBox(c)) { TL_ExtractBrepMesh(*b, m, false); delete b; }
+    }
+    std::string err;
+    const bool ok = (cmd == "EXPORTOBJ") ? TL_ExportMeshOBJ(m, path, &err)
+                                         : TL_ExportMeshSTL(m, path, true, &err);
+    set_fb(ok ? ("COMMAND: _" + cmd + " -> " + path) : ("COMMAND: _" + cmd + " FAILED: " + err));
+    return ok;
+  }
+
   if (cmd == "SAVEGH" || cmd == "SAVEGHX") {
     if (!gh_doc) return false;
     std::string path;

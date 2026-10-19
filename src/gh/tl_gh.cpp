@@ -870,6 +870,7 @@ const std::vector<TL_GhComponentSpec>& TL_GhComponentCatalog::All() {
     {"Surface","SubD","SubD Sphere","SubDSph","Smooth Catmull-Clark quad-SubD sphere",{PSpec("Center","C"),PSpec("Radius","R"),PSpec("Level","L")},{PSpec("SubD","S")}},
     {"Surface","Util","Cap Holes","Cap","Cap open planar boundary loops on mesh",{PSpec("Brep","B")},{PSpec("Brep","B"),PSpec("Valid","V")}},
     {"Surface","Util","Fillet Edge","FilEdge","Constant-radius rolling-ball fillet on Brep edge",{PSpec("Shape","S"),PSpec("Edge","E"),PSpec("Radius","R")},{PSpec("Brep","B")}},
+    {"Surface","Util","Variable Fillet Edge","VarFillet","Variable-radius rolling-ball fillet along Brep edge",{PSpec("Shape","S"),PSpec("Edge","E"),PSpec("Radius A","R0"),PSpec("Radius B","R1")},{PSpec("Brep","B")}},
     {"Surface","Util","Chamfer Edge","ChmEdge","Symmetric bevel chamfer on Brep edge",{PSpec("Shape","S"),PSpec("Edge","E"),PSpec("Distance","D")},{PSpec("Brep","B")}},
 
     // ---- 7. Mesh (8) -------------------------------------------------------
@@ -3629,10 +3630,13 @@ void TL_GhDocument::EvaluateSingleNode(TL_GhNode& node) {
     set_all({});
     return;
   }
-  if (nm == "Fillet Edge" || nm == "FilEdge" || nm == "Chamfer Edge" || nm == "ChmEdge") {
+  if (nm == "Fillet Edge" || nm == "FilEdge" || nm == "Chamfer Edge" || nm == "ChmEdge" ||
+      nm == "Variable Fillet Edge" || nm == "VarFillet") {
+    const bool is_var = (nm == "Variable Fillet Edge" || nm == "VarFillet");
     const bool is_fillet = (nm == "Fillet Edge" || nm == "FilEdge");
     const int eidx = std::max(0, (int)std::lround(num_in(1, 0.0)));
-    const double rad = std::max(0.1, num_in(2, 1.0));
+    const double rad0 = std::max(0.1, num_in(2, 1.0));
+    const double rad1 = std::max(0.1, num_in(3, 1.8));
     ON_BoundingBox bb(ON_3dPoint(-4, -4, 0), ON_3dPoint(4, 4, 8));
     if (!in.empty() && !in[0].empty() && in[0][0].kind == TL_GhValueKind::Box && in[0][0].box_val.IsValid())
       bb = in[0][0].box_val;
@@ -3645,8 +3649,9 @@ void TL_GhDocument::EvaluateSingleNode(TL_GhNode& node) {
     if (ON_Brep* src = ON_BrepBox(c)) {
       ON_Brep out_b;
       const int clamped_e = (src->m_E.Count() > 0) ? (eidx % src->m_E.Count()) : 0;
-      const bool ok = is_fillet ? TL_FilletBrepEdge(*src, clamped_e, rad, out_b)
-                                : TL_ChamferBrepEdge(*src, clamped_e, rad, out_b);
+      const bool ok = is_var    ? TL_VariableFilletBrepEdge(*src, clamped_e, rad0, rad1, out_b)
+                    : is_fillet ? TL_FilletBrepEdge(*src, clamped_e, rad0, out_b)
+                                : TL_ChamferBrepEdge(*src, clamped_e, rad0, out_b);
       delete src;
       if (ok) {
         ON_Mesh m;
