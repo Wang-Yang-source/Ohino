@@ -496,6 +496,22 @@ bool DecodeOnData(const std::vector<unsigned char>& bytes, TL_GhValue& out) {
   return ok;
 }
 
+bool EncodeOnData(const TL_GhValue& v, std::vector<unsigned char>& out_bytes) {
+  out_bytes.clear();
+  const ON_Object* obj = nullptr;
+  if (v.kind == TL_GhValueKind::Curve && v.curve_val) obj = v.curve_val.get();
+  else if (v.kind == TL_GhValueKind::Surface && v.surface_val) obj = v.surface_val.get();
+  else if (v.kind == TL_GhValueKind::Mesh && v.mesh_val) obj = v.mesh_val.get();
+  if (!obj) return false;
+
+  ON_Write3dmBufferArchive ar(4096, 0, 50, 20200101);
+  if (!ar.WriteObject(obj) || ar.SizeOfArchive() < 32) return false;
+  const unsigned char* p = static_cast<const unsigned char*>(ar.Buffer());
+  if (!p) return false;
+  out_bytes.assign(p, p + ar.SizeOfArchive());
+  return true;
+}
+
 double CurveLengthApprox(const ON_NurbsCurve& c) {
   ON_Interval d = c.Domain();
   const int n = 64;
@@ -1274,9 +1290,11 @@ bool TL_GhDocument::LoadFile(const std::string& file_path, std::string* error_ou
       std::string xml((const char*)raw.data(), raw.size());
       if (!ParseGhx(xml, root)) { if (error_out) *error_out = "malformed .ghx XML inside .ghz"; return false; }
     } else {
+      std::vector<unsigned char> inflated_inner;
+      const std::vector<unsigned char>& bin_buf = InflateRaw(raw, inflated_inner) ? inflated_inner : raw;
       BinReader r;
-      r.data = raw.data();
-      r.size = raw.size();
+      r.data = bin_buf.data();
+      r.size = bin_buf.size();
       if (!ReadChunk(r, root, 0)) { if (error_out) *error_out = "corrupt .gh inside .ghz"; return false; }
     }
   } else if (is_xml) {
@@ -3987,6 +4005,13 @@ struct BinWriter {
   void ItemRectF(const char* name, int idx, float x, float y, float w, float h) {
     Str7(name); I32(idx); I32(35); F32(x); F32(y); F32(w); F32(h);
   }
+  void ItemPoint3D(const char* name, int idx, const ON_3dPoint& pt) {
+    Str7(name); I32(idx); I32(51); F64(pt.x); F64(pt.y); F64(pt.z);
+  }
+  void ItemBytes(const char* name, int idx, const std::vector<unsigned char>& bytes) {
+    Str7(name); I32(idx); I32(20); I32((int32_t)bytes.size());
+    buf.insert(buf.end(), bytes.begin(), bytes.end());
+  }
 };
 
 bool DeflateRaw(const std::vector<unsigned char>& in, std::vector<unsigned char>& out) {
@@ -4026,6 +4051,8 @@ std::string XmlEsc(const std::string& in) {
 bool TL_GhDocument::SaveFile(const std::string& file_path, std::string* error_out) const {
   if (file_path.size() >= 4 && file_path.substr(file_path.size() - 4) == ".ghx")
     return SaveGhx(file_path, error_out);
+  if (file_path.size() >= 4 && file_path.substr(file_path.size() - 4) == ".ghz")
+    return SaveGhz(file_path, error_out);
   return SaveGh(file_path, error_out);
 }
 
@@ -4052,7 +4079,9 @@ bool TL_GhDocument::SaveGh(const std::string& file_path, std::string* error_out)
     if (!n.expression.empty()) cont_items += 1;       // Expression
     cont_items += (int)n.group_member_guids.size();   // ID[k]
 
-    int cont_children = 1 + (n.is_slider ? 1 : 0) + (int)n.inputs.size() + (int)n.outputs.size();
+    int cont_children = 1 + (n.is_slider ? 1 : 0) +
+                        (!n.persistent_data.empty() && !n.is_slider ? 1 : 0) +
+                        (int)n.inputs.size() + (int)n.outputs.size();
     w.Str7("Container"); w.I32(-1); w.I32(cont_items); w.I32(cont_children);
     w.ItemStr("InstanceGuid", -1, n.instance_guid);
     w.ItemStr("Name", -1, n.name);
@@ -4076,6 +4105,26 @@ bool TL_GhDocument::SaveGh(const std::string& file_path, std::string* error_out)
       w.ItemF64("Value", -1, n.slider.value);
       w.ItemI32("Digits", -1, n.slider.digits);
       w.ItemBool("Integer", -1, n.slider.is_integer);
+    }
+
+    // Optional Child: PersistentData (internalised 3D geometry / points / numbers)
+    if (!n.persistent_data.empty() && !n.is_slider) {
+      w.Str7("PersistentData"); w.I32(-1); w.I32(0); w.I32(1);
+      w.Str7("Branch"); w.I32(0); w.I32(0); w.I32((int32_t)n.persistent_data.size());
+      for (size_t vi = 0; vi < n.persistent_data.size(); ++vi) {
+        const TL_GhValue& pv = n.persistent_data[vi];
+        w.Str7("Item"); w.I32((int32_t)vi); w.I32(1); w.I32(0);
+        std::vector<unsigned char> on_bytes;
+        if (EncodeOnData(pv, on_bytes)) {
+          w.ItemBytes("ON_Data", -1, on_bytes);
+        } else if (pv.kind == TL_GhValueKind::Point || pv.kind == TL_GhValueKind::Vector) {
+          w.ItemPoint3D("Coordinate", -1, pv.pt_val);
+        } else if (pv.kind == TL_GhValueKind::String) {
+          w.ItemStr("Text", -1, pv.str_val);
+        } else {
+          w.ItemF64("number", -1, pv.AsNumber(0.0));
+        }
+      }
     }
 
     auto write_port = [&](const TL_GhPort& p, bool is_out, int pidx) {
@@ -4171,4 +4220,90 @@ bool TL_GhDocument::SaveGhx(const std::string& file_path, std::string* error_out
   const size_t written = std::fwrite(xml.data(), 1, xml.size(), f);
   std::fclose(f);
   return written == xml.size();
+}
+
+bool TL_GhDocument::SaveGhz(const std::string& file_path, std::string* error_out) const {
+  // Build the uncompressed inner `.gh` archive via a temporary buffer / file, or serialize
+  // directly into a ZIP container containing `Definition.gh` (supported by `LoadFile` on `.ghz`).
+  const std::string tmp_gh = file_path + ".inner.gh";
+  if (!SaveGh(tmp_gh, error_out))
+    return false;
+
+  std::vector<unsigned char> payload;
+  {
+    FILE* tf = std::fopen(tmp_gh.c_str(), "rb");
+    if (!tf) { std::remove(tmp_gh.c_str()); return false; }
+    std::fseek(tf, 0, SEEK_END);
+    const long len = std::ftell(tf);
+    std::fseek(tf, 0, SEEK_SET);
+    if (len > 0) {
+      payload.resize((size_t)len);
+      std::fread(payload.data(), 1, (size_t)len, tf);
+    }
+    std::fclose(tf);
+    std::remove(tmp_gh.c_str());
+  }
+  if (payload.empty()) return false;
+
+  // Write a valid PKZIP container (`0x04034b50` local header + stored entry `Definition.gh`
+  // + `0x02014b50` central directory + `0x06054b50` end of central directory).
+  const std::string entry_name = "Definition.gh";
+  const uint32_t crc = crc32(0L, payload.data(), (uInt)payload.size());
+  const uint32_t sz = (uint32_t)payload.size();
+  const uint16_t nlen = (uint16_t)entry_name.size();
+
+  std::vector<unsigned char> zip;
+  auto push16 = [&](uint16_t v) {
+    unsigned char b[2]; std::memcpy(b, &v, 2); zip.insert(zip.end(), b, b + 2);
+  };
+  auto push32 = [&](uint32_t v) {
+    unsigned char b[4]; std::memcpy(b, &v, 4); zip.insert(zip.end(), b, b + 4);
+  };
+
+  // Local file header
+  push32(0x04034b50u);
+  push16(20); // version needed
+  push16(0);  // flags
+  push16(0);  // method = 0 (stored, payload is already deflate-compressed .gh)
+  push16(0); push16(0); // mtime, mdate
+  push32(crc);
+  push32(sz);
+  push32(sz);
+  push16(nlen);
+  push16(0); // extra len
+  zip.insert(zip.end(), entry_name.begin(), entry_name.end());
+  zip.insert(zip.end(), payload.begin(), payload.end());
+
+  const uint32_t cd_offset = (uint32_t)zip.size();
+  // Central directory header
+  push32(0x02014b50u);
+  push16(20); push16(20);
+  push16(0); push16(0);
+  push16(0); push16(0);
+  push32(crc);
+  push32(sz);
+  push32(sz);
+  push16(nlen);
+  push16(0); push16(0); push16(0); push16(0);
+  push32(0);
+  push32(0); // local header offset
+  zip.insert(zip.end(), entry_name.begin(), entry_name.end());
+  const uint32_t cd_size = (uint32_t)zip.size() - cd_offset;
+
+  // End of central directory
+  push32(0x06054b50u);
+  push16(0); push16(0);
+  push16(1); push16(1);
+  push32(cd_size);
+  push32(cd_offset);
+  push16(0);
+
+  FILE* f = std::fopen(file_path.c_str(), "wb");
+  if (!f) {
+    if (error_out) *error_out = "cannot open .ghz file for writing: " + file_path;
+    return false;
+  }
+  const size_t written = std::fwrite(zip.data(), 1, zip.size(), f);
+  std::fclose(f);
+  return written == zip.size();
 }

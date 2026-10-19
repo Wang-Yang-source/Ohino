@@ -93,6 +93,7 @@ struct TL_VulkanRenderOptions
   int sample_count = 4;            ///< MSAA samples (4 = 4x MSAA, 1 = off)
   bool enable_depth = true;        ///< 32-bit float depth buffer (`D32_SFLOAT`)
   bool enable_shaded_meshes = true;///< Render shaded triangle meshes alongside wireframes
+  uint8_t viewport_shaded_mask = 0xFF; ///< Bitmask of viewports (bit `vi`) that render shaded triangle meshes
   bool cull_backfaces = true;      ///< CULL_MODE_BACK for closed meshes (see TL_CapMeshOpenBoundaryLoops)
   bool enable_feature_edges = true;///< Draw mesh silhouette + hard crease edges over the shading
   double crease_angle_degrees = 30.0; ///< Dihedral angle above which an edge counts as a crease

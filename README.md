@@ -108,7 +108,7 @@ Ohino
 │   ├── gh/           Grasshopper (.gh/.ghx/.ghz) archive reader + DAG solver
 │   └── gui/          Rhino 9 studio layout + 3D Gumball/OSnap + SDL3 interactive window
 ├── apps/opentl_cli   demo, inspect, four-view, Vulkan render, studio GUI render & interactive window
-├── tests/            21 sections, 3044 checks
+├── tests/            21 sections, 3058 checks
 ├── docs/             PRD_RHINO9_GH_AND_GUI.md, TODO.md
 └── assets/           logo + screenshots
 ```
@@ -194,9 +194,9 @@ TL_ApplyStudioViewports(layout, rects);        // 4 views inside the workbench
 
 | Check | Result |
 | --- | --- |
-| `opentl_tests` | **21 sections, 3044 checks, 0 failures** |
+| `opentl_tests` | **21 sections, 3058 checks, 0 failures** |
 | `ctest` | **5/5 passed** (`opentl_tests`, cli demo/views/vulkan/gui) |
-| `.gh` / `.ghz` fixtures | 8/8 Rhino 9 WIP `.gh` tutorials + GH2 `CircleRadius.ghz` parse & solve + **191/191 catalog batteries** evaluated & lossless `.gh`/`.ghx` round-trip |
+| `.gh` / `.ghz` fixtures | 8/8 Rhino 9 WIP `.gh` tutorials + GH2 `CircleRadius.ghz` parse & solve + **191/191 catalog batteries** evaluated & lossless `.gh`/`.ghx`/`.ghz` + `ON_Data` round-trip |
 | Slider re-solve | `Segments` 15 → 30 and GH2 `Radius` 10 → 18 update downstream geometry |
 | Studio render & SDL3 GUI | 1920×1080 PNG + SDL3 interactive window, `Vulkan 1.2.357` / `Apple M4`, 4× MSAA, `D32_SFLOAT`, 72 964 line vertices, 1 319 876 triangles |
 | `.3dm` model | 383 objects, 309 Breps, 241 620 faces, four consistent viewports with 3D Gumball + `CEN` OSnap |
@@ -214,16 +214,19 @@ TL_ApplyStudioViewports(layout, rects);        // 4 views inside the workbench
 * Grasshopper covers all 191 components across the 10-tab `TL_GhComponentCatalog`, programmatic and
   interactive canvas authoring (`AddComponent`, `AddSlider`, `Connect`, `MoveNode`, wire dragging),
   and lossless `.gh` / `.ghx` save & reload.
-* `.ghz` (Grasshopper 2 ZIP + Pear `Document.root`) is unpacked and solved in-memory; internalised
-  geometry stored as `ON_Data` blobs is decoded when the buffer is a plain `ON_Object` archive.
+* `.ghz` (Grasshopper 2 ZIP + Pear `Document.root` or PKZIP-wrapped `Definition.gh`) is unpacked,
+  solved, and saved (`TL_GhDocument::SaveGhz`); internalised geometry (`ON_NurbsCurve`,
+  `ON_NurbsSurface`, `ON_Mesh`) is encoded and decoded losslessly via `ON_Write3dmBufferArchive` /
+  `ON_Read3dmBufferArchive` (`ON_Data` type 20 blobs).
 * The interactive window mode shares the same layout/draw list as the headless renderer; mouse/trackpad
-  camera navigation, full 3D Gumball gizmo dragging (translate arrows, scale handles, and rotation arc
-  with undo), screen-space single-click & Window/Crossing marquee selection (`TL_PickSceneObjectAtScreen`,
-  `TL_SelectSceneObjectsInRect`), 3D mesh raycasting (`TL_RaycastMesh`), yellow selection highlighting,
-  slider/node/wire dragging, and interactive command-line commands (`_Point`, `_Line`, `_Circle`,
-  `_Arc`, `_Box`, `_Move`, `_Rotate`, `_Scale`, `_BooleanUnion`, `_Delete`, `_Undo`, `_Save3dm`,
-  `_SaveGh`, `_ExportObj`, `_ExportStl`, `_ExportStep`, `_ExportIges`, `_GhAdd`) are wired through
-  `TL_ExecuteStudioCommand`.
+  camera navigation, per-viewport `WIREFRAME` / `SHADED` display mode pill toggling
+  (`viewport_shaded_mask`), full 3D Gumball gizmo dragging (translate arrows, scale handles, and
+  rotation arc with undo), screen-space single-click & Window/Crossing marquee selection
+  (`TL_PickSceneObjectAtScreen`, `TL_SelectSceneObjectsInRect`), 3D mesh screen raycast picking
+  (`TL_PickMeshAtScreen` / `TL_RaycastMesh`), yellow selection highlighting, slider/node/wire dragging,
+  and interactive command-line commands (`_Point`, `_Line`, `_Circle`, `_Arc`, `_Box`, `_Move`,
+  `_Rotate`, `_Scale`, `_BooleanUnion`, `_Delete`, `_Undo`, `_Save3dm`, `_SaveGh`, `_ExportObj`,
+  `_ExportStl`, `_ExportStep`, `_ExportIges`, `_GhAdd`) are wired through `TL_ExecuteStudioCommand`.
 * 2D coplanar curve fillets (`TL_FilletCurves`), constant-radius solid Brep edge fillets / chamfers
   (`TL_FilletBrepEdge` / `TL_ChamferBrepEdge`), and variable-radius rolling-ball Brep edge fillets
   (`TL_VariableFilletBrepEdge`) are implemented alongside ISO 10303-21 STEP (`AP214`), ANSI Y14.26M

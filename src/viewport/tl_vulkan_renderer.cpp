@@ -903,7 +903,9 @@ bool TL_VulkanFourViewRenderer::RenderScene(
     EmitGrid(vp, rect, window, lines);
 
     // Shaded meshes first (they write depth), wireframe afterwards.
-    if (options.enable_shaded_meshes)
+    const bool vp_shaded = options.enable_shaded_meshes &&
+                           ((options.viewport_shaded_mask & (1u << (vi & 7))) != 0);
+    if (vp_shaded)
     {
       for (std::size_t mi = 0; mi < extra_meshes.size(); ++mi)
       {

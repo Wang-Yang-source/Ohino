@@ -138,7 +138,6 @@ void DrawPorts(TL_GuiOverlay& ov, const TL_GhNode& n, float x, float y, float w,
 
 void DrawViewportGumballAndHud(TL_GuiOverlay& ov, const TL_GuiStudioInfo& info) {
   if (!info.layout) return;
-  const char* modes[4] = {"WIREFRAME", "SHADED", "SHADED", "SHADED"};
   for (int vi = 0; vi < info.layout->Count(); ++vi) {
     const TL_Viewport& vp = info.layout->View(vi);
     const float vx = (float)vp.m_left;
@@ -146,13 +145,15 @@ void DrawViewportGumballAndHud(TL_GuiOverlay& ov, const TL_GuiStudioInfo& info) 
     const float vw = (float)vp.m_width;
     const float vh = (float)vp.m_height;
 
-    // Rhino 9 viewport display mode pill next to title
+    // Rhino 9 viewport display mode pill next to title (reflects `info.viewport_shaded_mask`)
+    const bool is_shaded = ((info.viewport_shaded_mask & (1u << (vi & 7))) != 0);
+    const char* mode_label = is_shaded ? "SHADED" : "WIREFRAME";
     const float name_w = TextWidth(vp.m_name, 2.0f);
     const float pill_x = vx + 16.0f + name_w;
     const float pill_y = vy + 7.0f;
-    const float pill_w = TextWidth(modes[vi & 3], 1.1f) + 14.0f;
-    AddFill(ov, pill_x, pill_y, pill_w, 16.0f, kSurface0, kSurface2, 1.0f);
-    AddText(ov, pill_x + 7.0f, pill_y + 4.0f, 1.1f, modes[vi & 3], kSubtext0);
+    const float pill_w = TextWidth(mode_label, 1.1f) + 14.0f;
+    AddFill(ov, pill_x, pill_y, pill_w, 16.0f, kSurface0, is_shaded ? kTeal : kSurface2, 1.0f);
+    AddText(ov, pill_x + 7.0f, pill_y + 4.0f, 1.1f, mode_label, is_shaded ? kTeal : kSubtext0);
 
     if (!info.show_gumball) continue;
     ON_2dPoint c2d;
@@ -824,6 +825,63 @@ uint64_t TL_PickSceneObjectAtScreen(
   return best_id;
 }
 
+int TL_PickMeshAtScreen(
+  const std::vector<const ON_Mesh*>& meshes,
+  const TL_FourViewLayout& layout,
+  int view_index,
+  float screen_x,
+  float screen_y,
+  ON_3dPoint* out_hit_point,
+  int* out_face_index,
+  ON_3dVector* out_hit_normal)
+{
+  if (meshes.empty())
+    return -1;
+  const TL_Viewport& vp = layout.View(std::clamp(view_index, 0, 3));
+  ON_3dPoint ray_from = ON_3dPoint::Origin;
+  ON_3dVector ray_dir = ON_3dVector::ZeroVector;
+  if (!vp.ScreenToRay(ON_2dPoint(screen_x, screen_y), ray_from, ray_dir) || !ray_dir.Unitize())
+    return -1;
+
+  // For parallel orthographic views `CameraLocation()` sits on the target plane, so pull the
+  // ray origin back along `-ray_dir` by 1e4 units to guarantee it starts in front of all solids.
+  const ON_3dPoint start = (vp.m_projection == TL_PROJECTION_PARALLEL)
+    ? (ray_from - ray_dir * 10000.0)
+    : ray_from;
+  const ON_Line ray(start, start + ray_dir);
+
+  int best_mi = -1;
+  int best_fi = -1;
+  double best_t = 1e300;
+  ON_3dPoint best_pt = ON_3dPoint::Origin;
+  ON_3dVector best_n = ON_3dVector::ZAxis;
+
+  for (size_t mi = 0; mi < meshes.size(); ++mi)
+  {
+    if (nullptr == meshes[mi]) continue;
+    double t = 0.0;
+    ON_3dPoint hp = ON_3dPoint::Origin;
+    int fi = -1;
+    ON_3dVector hn = ON_3dVector::ZAxis;
+    if (TL_RaycastMesh(*meshes[mi], ray, &t, &hp, &fi, &hn) && t < best_t)
+    {
+      best_t = t;
+      best_mi = static_cast<int>(mi);
+      best_fi = fi;
+      best_pt = hp;
+      best_n = hn;
+    }
+  }
+
+  if (best_mi >= 0)
+  {
+    if (nullptr != out_hit_point)  *out_hit_point  = best_pt;
+    if (nullptr != out_face_index) *out_face_index = best_fi;
+    if (nullptr != out_hit_normal) *out_hit_normal = best_n;
+  }
+  return best_mi;
+}
+
 std::vector<uint64_t> TL_SelectSceneObjectsInRect(
   const opentl::mvp::SceneDocument& scene,
   const TL_FourViewLayout& layout,
@@ -1239,7 +1297,8 @@ bool TL_ExecuteStudioCommand(
 bool TL_ProcessStudioInputEvent(const TL_StudioInputEvent& ev, const TL_GuiStudioRects& rects,
                                 TL_FourViewLayout& layout, const ON_BoundingBox& scene_bbox,
                                 TL_GhDocument* gh_doc, TL_StudioInputState& state,
-                                opentl::mvp::SceneDocument* scene) {
+                                opentl::mvp::SceneDocument* scene,
+                                const std::vector<const ON_Mesh*>* meshes) {
   const int hovered = StudioViewportAt(layout, ev.x, ev.y);
   const bool in_viewports = InFill(rects.viewports, ev.x, ev.y);
   const bool in_gh_canvas = InFill(rects.gh_canvas, ev.x, ev.y);
@@ -1397,9 +1456,21 @@ bool TL_ProcessStudioInputEvent(const TL_StudioInputEvent& ev, const TL_GuiStudi
         return true;
       }
 
-      // (c) 3D viewports: Gumball axis, double-click maximize, orbit/pan/zoom drag
+      // (c) 3D viewports: Gumball axis, display mode pill toggle, double-click maximize, orbit/pan/zoom drag
       if (hovered >= 0 && in_viewports) {
         state.active_view = hovered;
+        const TL_Viewport& vp_h = layout.View(hovered);
+        // Single-click on the `WIREFRAME` / `SHADED` pill next to the viewport title toggles shading!
+        if (ev.button == 1 && ev.clicks == 1) {
+          const float name_w = TextWidthOf(vp_h.m_name, 2.0f);
+          const float pill_x = (float)vp_h.m_left + 16.0f + name_w;
+          const float pill_y = (float)vp_h.m_top + 7.0f;
+          if (ev.x >= pill_x && ev.x <= pill_x + 92.0f && ev.y >= pill_y && ev.y <= pill_y + 18.0f) {
+            state.viewport_shaded_mask ^= (uint8_t)(1u << (hovered & 7));
+            refresh_status();
+            return true;
+          }
+        }
         if (ev.clicks >= 2) {
           const TL_Viewport& vp = layout.View(hovered);
           if (ev.y <= vp.m_top + 26.0f) {
@@ -1474,9 +1545,25 @@ bool TL_ProcessStudioInputEvent(const TL_StudioInputEvent& ev, const TL_GuiStudi
           if (0 != hit)
           {
             state.selected_object_ids.push_back(hit);
+            state.selected_mesh_index = -1;
+            state.selected_mesh_face = -1;
             state.gumball_origin = pivot;
             refresh_status();
             return true;
+          }
+          if (meshes && !meshes->empty())
+          {
+            ON_3dPoint hit_pt = ON_3dPoint::Origin;
+            int hit_fi = -1;
+            const int mi = TL_PickMeshAtScreen(*meshes, layout, hovered, ev.x, ev.y, &hit_pt, &hit_fi, nullptr);
+            state.selected_mesh_index = mi;
+            state.selected_mesh_face = hit_fi;
+            if (mi >= 0)
+            {
+              state.gumball_origin = hit_pt;
+              refresh_status();
+              return true;
+            }
           }
         }
         state.dragging_view = true;
@@ -1779,7 +1866,7 @@ bool TL_RunInteractiveStudioWindow(
   int frames = 0;
 
   auto pump = [&](const TL_StudioInputEvent& ev) {
-    if (TL_ProcessStudioInputEvent(ev, rects, layout, scene_bbox, gh_doc, state, &base_scene)) dirty = true;
+    if (TL_ProcessStudioInputEvent(ev, rects, layout, scene_bbox, gh_doc, state, &base_scene, &base_meshes)) dirty = true;
   };
 
   while (running) {
@@ -1868,12 +1955,14 @@ bool TL_RunInteractiveStudioWindow(
       info.gh_pan_x = state.gh_pan_x;
       info.gh_pan_y = state.gh_pan_y;
       info.maximized_view = state.maximized_view;
+      info.viewport_shaded_mask = state.viewport_shaded_mask;
       info.status = state.status_line;
 
       TL_VulkanRenderOptions opts;
       opts.sample_count = 4;
       opts.enable_depth = true;
       opts.enable_shaded_meshes = true;
+      opts.viewport_shaded_mask = state.viewport_shaded_mask;
       opts.mesh_colors = frame_colors;
       TL_BuildStudioOverlay(rects, gh_doc, info, opts.gui);
 

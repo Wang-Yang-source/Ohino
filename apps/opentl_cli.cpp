@@ -964,6 +964,7 @@ int RunVulkanRender(const std::string& out_dir, bool use_demo_scene,
     }
     TL_BuildStudioOverlay(studio_rects, have_gh ? &gh_document : nullptr, info, overlay);
     options.gui = overlay;
+    options.viewport_shaded_mask = info.viewport_shaded_mask;
   }
   const bool rendered = renderer.RenderScene(document, layout, result, meshes, options);
 

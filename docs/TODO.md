@@ -83,3 +83,7 @@
   - [x] `TL_ExportBrepSTEP` / `TL_ImportBrepSTEP`（ISO 10303-21 AP214 `B_SPLINE_SURFACE_WITH_KNOTS`）与 `TL_ExportCurvesIGES` / `TL_ImportCurvesIGES`（ANSI Y14.26M Type 126 NURBS 曲线），Studio 新增 `_ExportStep` / `_ExportIges` 命令
   - [x] 3D Gumball 补齐 70% 臂长处的缩放方块手柄拖拽与 22px 旋转圆弧手柄拖拽，支持平移/旋转/缩放全自由度操纵与 `undo_stack` 撤销
   - [x] `opentl_tests` **21 组 3044 项断言 0 失败**，`ctest 5/5` 全过，构建并发布 `v0.3.0` 三平台（macOS `.dmg`/`.pkg`/`.tar.gz`、Linux `.tar.gz`/`.zip`、Windows `.exe` NSIS 安装包/`.zip`）原生发行版
+- [x] **Stage 21：分视口独立 Wireframe/Shaded 渲染管线与点击切换、3D 着色网格屏幕射线拾取、`.ghz` 与内嵌 `ON_Data` 二进制几何无损序列化**
+  - [x] `TL_VulkanRenderOptions::viewport_shaded_mask`：分视口独立控制 `WIREFRAME`（仅绘制特征/轮廓线，透出底格）与 `SHADED`（Blinn-Phong 着色三角面），支持鼠标单击视口标题旁胶囊徽章实时切换
+  - [x] `TL_PickMeshAtScreen`：将视口屏幕坐标经 `ScreenToRay`（含正交视口射线后移修正）投射并调用 `TL_RaycastMesh`，直接拾取 3D 着色网格表面并重定位 Gumball 支点
+  - [x] `TL_GhDocument::SaveGhz` 与 `EncodeOnData`：支持 `.ghz` PKZIP 容器保存及 `ON_NurbsCurve` / `ON_NurbsSurface` / `ON_Mesh` 内嵌 `ON_Data`（`ON_Write3dmBufferArchive`）无损往返，`opentl_tests` **21 组 3058 项断言 0 失败**，`ctest 5/5` 全过，`vision_analyze` 验证 Top 视口真线框与其余三视口着色完全一致

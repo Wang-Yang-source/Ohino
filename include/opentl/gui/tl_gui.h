@@ -59,6 +59,7 @@ struct TL_CLASS TL_GuiStudioInfo
   float gh_pan_x = 0.0f;        ///< Interactive canvas pan X offset (px)
   float gh_pan_y = 0.0f;        ///< Interactive canvas pan Y offset (px)
   int maximized_view = -1;      ///< -1 = 2x2 four-view, 0..3 = maximized single viewport
+  uint8_t viewport_shaded_mask = 0x0E; ///< Bit `vi` = 1 for Shaded, 0 for Wireframe (default: Top=Wireframe, others=Shaded)
 };
 
 enum class TL_StudioEventKind : int
@@ -95,6 +96,9 @@ struct TL_CLASS TL_StudioInputState
 {
   int active_view = -1;
   int maximized_view = -1;         ///< -1 = 2x2 grid, 0..3 = single maximized viewport
+  uint8_t viewport_shaded_mask = 0x0E; ///< Bit `vi` = 1 for Shaded, 0 for Wireframe (default: Top=0 Wireframe, 1..3 Shaded)
+  int selected_mesh_index = -1;    ///< Index into `meshes` picked via 3D raycast (`TL_RaycastMesh`, -1 = none)
+  int selected_mesh_face = -1;     ///< Triangle/quad face index hit on `selected_mesh_index`
   bool dragging_view = false;
   bool orbit_mode = false;
   bool zoom_drag_mode = false;     ///< Ctrl/Cmd + RMB vertical drag zoom
@@ -155,6 +159,22 @@ TL_FUNCTION uint64_t TL_PickSceneObjectAtScreen(
   ON_3dPoint* out_pivot = nullptr);
 
 /**
+ * Ray-cast a screen pixel `(screen_x, screen_y)` inside viewport `view_index` of `layout`
+ * against a list of 3D shaded `meshes` using `TL_Viewport::ScreenToRay` + `TL_RaycastMesh`.
+ * Returns the index `0 .. meshes.size()-1` of the nearest hit mesh (or -1 when no mesh is hit),
+ * writing the 3D hit point, face index, and outward normal when requested.
+ */
+TL_FUNCTION int TL_PickMeshAtScreen(
+  const std::vector<const ON_Mesh*>& meshes,
+  const TL_FourViewLayout& layout,
+  int view_index,
+  float screen_x,
+  float screen_y,
+  ON_3dPoint* out_hit_point = nullptr,
+  int* out_face_index = nullptr,
+  ON_3dVector* out_hit_normal = nullptr);
+
+/**
  * Window / Crossing marquee selection inside viewport `view_index`:
  *   - Left-to-right (`x1 >= x0`): Window selection — only objects whose sampled screen points lie
  *     entirely inside `[min_x, max_x] x [min_y, max_y]`;
@@ -209,7 +229,8 @@ TL_FUNCTION bool TL_ProcessStudioInputEvent(
   const ON_BoundingBox& scene_bbox,
   TL_GhDocument* gh_doc,
   TL_StudioInputState& state,
-  opentl::mvp::SceneDocument* scene = nullptr);
+  opentl::mvp::SceneDocument* scene = nullptr,
+  const std::vector<const ON_Mesh*>* meshes = nullptr);
 
 /**
  * Build the complete Rhino 9 style chrome draw list: menu, command bar, tool tabs,

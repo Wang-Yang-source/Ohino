@@ -3508,9 +3508,68 @@ void TestStage17ModelingAndPicking() {
       CHECK(std::hypot(mid.x, mid.y) < 0.40);
       std::printf("   surface self-intersection: branches=%d max_err=%.2e mid=(%.4f,%.4f,%.4f)\n",
                   n_self, self_branches[0].max_error, mid.x, mid.y, mid.z);
-    }
-    TL_FreeSSXBranches(self_branches);
-  }
+      }
+      TL_FreeSSXBranches(self_branches);
+      }
+
+      // ---- Stage 21: Per-Viewport Wireframe/Shaded Mask, 3D Mesh Screen Raycast Picking, & .ghz / Internalised ON_Data Round-Trip ----
+      {
+      ON_Mesh box_m = MakeTestAxisBoxMesh(ON_3dPoint(-3, -3, 0), ON_3dPoint(3, 3, 6));
+      std::vector<const ON_Mesh*> pick_meshes = { &box_m };
+      TL_FourViewLayout lay = TL_FourViewLayout::Default(1600, 1000);
+      lay.ZoomToFitAll(ON_BoundingBox(ON_3dPoint(-5, -5, -1), ON_3dPoint(5, 5, 7)));
+
+      // Project the top-face center `(0, 0, 6)` into the Top view (`view_index = 0`) and raycast-pick `box_m`
+      ON_2dPoint top_center_2d;
+      CHECK(lay.View(0).WorldToScreen(ON_3dPoint(0, 0, 6), top_center_2d));
+      ON_3dPoint hit_pt = ON_3dPoint::Origin;
+      int hit_fi = -1;
+      ON_3dVector hit_n = ON_3dVector::ZeroVector;
+      const int picked_mi = TL_PickMeshAtScreen(pick_meshes, lay, 0, (float)top_center_2d.x, (float)top_center_2d.y,
+                                                &hit_pt, &hit_fi, &hit_n);
+      CHECK_EQ_INT(picked_mi, 0);
+      CHECK_NEAR(hit_pt.z, 6.0, 1e-4);
+      CHECK(hit_fi >= 0);
+
+      // Clicking the `WIREFRAME` pill in Top viewport (`view_index = 0`) toggles bit 0 of `viewport_shaded_mask`
+      const TL_GuiStudioRects rects = TL_ComputeStudioRects(1920, 1080);
+      TL_ApplyStudioViewports(lay, rects, -1);
+      TL_StudioInputState st;
+      CHECK_EQ_INT((int)st.viewport_shaded_mask, 0x0E); // Top=0 (Wireframe), Persp/Front/Right=1 (Shaded)
+      TL_StudioInputEvent pill_click;
+      pill_click.kind = TL_StudioEventKind::MouseDown;
+      pill_click.button = 1;
+      pill_click.clicks = 1;
+      pill_click.x = (float)lay.View(0).m_left + 58.0f;
+      pill_click.y = (float)lay.View(0).m_top + 12.0f;
+      CHECK(TL_ProcessStudioInputEvent(pill_click, rects, lay, ON_BoundingBox(), nullptr, st, nullptr, &pick_meshes));
+      CHECK_EQ_INT((int)st.viewport_shaded_mask, 0x0F); // Top toggled to Shaded!
+
+      // Grasshopper `.ghz` ZIP + internalised `ON_Data` (`ON_NurbsCurve` & `ON_Mesh`) round-trip
+      TL_GhDocument gh_orig;
+      const int c_node = gh_orig.AddComponent("Curve", 40, 40);
+      CHECK(c_node >= 0);
+      if (c_node >= 0) {
+        ON_NurbsCurve internal_crv(3, false, 2, 2);
+        internal_crv.MakeClampedUniformKnotVector(1.0);
+        internal_crv.SetCV(0, ON_3dPoint(1, 2, 3));
+        internal_crv.SetCV(1, ON_3dPoint(9, 8, 7));
+        gh_orig.NodesMutable()[(size_t)c_node].persistent_data = { TL_GhValue::MakeCurve(internal_crv) };
+      }
+      const std::string ghz_path = "/tmp/ohino_stage21_test.ghz";
+      CHECK(gh_orig.SaveFile(ghz_path));
+      TL_GhDocument gh_reloaded;
+      CHECK(gh_reloaded.LoadFile(ghz_path));
+      CHECK_EQ_INT((int)gh_reloaded.Nodes().size(), 1);
+      if (!gh_reloaded.Nodes().empty()) {
+        const auto& pd = gh_reloaded.Nodes()[0].persistent_data;
+        CHECK_EQ_INT((int)pd.size(), 1);
+        if (!pd.empty() && pd[0].curve_val) {
+          CHECK(pd[0].curve_val->PointAtStart().DistanceTo(ON_3dPoint(1, 2, 3)) < 1e-6);
+          CHECK(pd[0].curve_val->PointAtEnd().DistanceTo(ON_3dPoint(9, 8, 7)) < 1e-6);
+        }
+      }
+      }
 
   EndSection();
 }
