@@ -108,3 +108,40 @@ TL_FUNCTION ON_NurbsCurve* TL_OffsetCurve(
   int sample_count = 48,
   ON_NurbsCurve* result = nullptr
 );
+
+/**
+ * Create a rational NURBS surface of revolution (`ON_RevSurface::GetNurbForm`) by revolving
+ * `profile` around `axis_line` through angle interval `[start_angle_radians, end_angle_radians]`.
+ */
+TL_FUNCTION ON_NurbsSurface* TL_RevolveCurve(
+  const ON_Curve& profile,
+  const ON_Line& axis_line,
+  double start_angle_radians = 0.0,
+  double end_angle_radians = 2.0 * ON_PI,
+  ON_NurbsSurface* result = nullptr
+);
+
+/**
+ * Construct a Coons / bilinearly blended Gordon-Coons NURBS patch from 2, 3, or 4 boundary
+ * curves (`EdgeSurface`). When 4 curves are provided in loop order `(south, east, north, west)`
+ * or unordered, endpoints are matched and blended via transfinite Coons interpolation:
+ *   S(u,v) = (1-v)*C_south(u) + v*C_north(u) + (1-u)*C_west(v) + u*C_east(v) - BilinearCorners(u,v).
+ */
+TL_FUNCTION ON_NurbsSurface* TL_CreateEdgeSurface(
+  const ON_SimpleArray<const ON_Curve*>& boundary_curves,
+  ON_NurbsSurface* result = nullptr
+);
+
+/**
+ * Compute exact tangent-continuous circular fillet arc `out_arc` of `radius` between two
+ * coplanar curves `curve_a` and `curve_b`, plus the trimmed copy of each curve (`out_trimmed_a`,
+ * `out_trimmed_b`). Returns true when a valid fillet arc of `radius` exists.
+ */
+TL_FUNCTION bool TL_FilletCurves(
+  const ON_Curve& curve_a,
+  const ON_Curve& curve_b,
+  double radius,
+  ON_Arc& out_arc,
+  ON_NurbsCurve* out_trimmed_a = nullptr,
+  ON_NurbsCurve* out_trimmed_b = nullptr
+);

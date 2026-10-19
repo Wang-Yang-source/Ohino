@@ -111,6 +111,7 @@ struct TL_CLASS TL_StudioInputState
   float last_my = 0.0f;
   ON_3dPoint gumball_origin = ON_3dPoint::Origin;
   double gumball_radius = 12.0;
+  uint64_t selected_object_id = 0; ///< Currently selected `SceneObject::id` in the 3D viewports (0 = none)
   ON_3dPoint cursor_world = ON_3dPoint::Origin;
   std::string command_buffer;      ///< Live interactive command line input buffer
   std::string last_command_result; ///< Most recent command execution feedback
@@ -127,6 +128,21 @@ TL_FUNCTION void TL_ApplyStudioViewports(
   TL_FourViewLayout& layout,
   const TL_GuiStudioRects& rects,
   int maximized_view = -1);
+
+/**
+ * Pick the `SceneObject` in `scene` closest to screen pixel `(screen_x, screen_y)` inside
+ * viewport `view_index` of `layout` (within `pixel_tol` pixels).
+ * Returns the picked object's stable 64-bit `id` (or 0 when nothing is within `pixel_tol`),
+ * and optionally writes the object's bounding-box center to `out_pivot`.
+ */
+TL_FUNCTION uint64_t TL_PickSceneObjectAtScreen(
+  const opentl::mvp::SceneDocument& scene,
+  const TL_FourViewLayout& layout,
+  int view_index,
+  float screen_x,
+  float screen_y,
+  double pixel_tol = 10.0,
+  ON_3dPoint* out_pivot = nullptr);
 
 /**
  * Execute a Rhino-style command line string against `scene`, `gh_doc`, `layout`, and `state`.

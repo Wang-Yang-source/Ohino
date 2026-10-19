@@ -840,10 +840,11 @@ const std::vector<TL_GhComponentSpec>& TL_GhComponentCatalog::All() {
     {"Curve","Analysis","Point In Curve","InCrv","Test point inclusion inside closed planar curve",{PSpec("Point","P"),PSpec("Curve","C"),PSpec("Plane","Pl")},{PSpec("Relationship","R"),PSpec("Point","P")}},
     {"Curve","Analysis","Control Points","CV","Extract NURBS control polygon vertices",{PSpec("Curve","C")},{PSpec("Points","P"),PSpec("Weights","W")}},
     {"Curve","Util","Offset Curve","Offset","Offset curve in plane by distance",{PSpec("Curve","C"),PSpec("Distance","D"),PSpec("Plane","P"),PSpec("Corners","C")},{PSpec("Curve","C")}},
+    {"Curve","Util","Fillet","Fillet","Fillet corner between two curves with circular arc",{PSpec("Curve A","A"),PSpec("Curve B","B"),PSpec("Radius","R")},{PSpec("Curve A","A"),PSpec("Curve B","B"),PSpec("Arc","F")}},
     {"Curve","Util","Join Curves","Join","Join contiguous curve segments",{PSpec("Curves","C"),PSpec("Preserve","P")},{PSpec("Curves","C")}},
     {"Curve","Util","Flip Curve","Flip","Reverse curve parameterization",{PSpec("Curve","C"),PSpec("Guide","G")},{PSpec("Curve","C"),PSpec("Flipped","F")}},
 
-    // ---- 6. Surface (16) ---------------------------------------------------
+    // ---- 6. Surface (22) ---------------------------------------------------
     {"Surface","Primitive","Bounding Box","BBox","Axis-aligned 3D bounding box",{PSpec("Content","C"),PSpec("Plane","P")},{PSpec("Box","B"),PSpec("Box","B")}},
     {"Surface","Primitive","Center Box","BoxCen","Box centered on plane with X/Y/Z half-sizes",{PSpec("Base","B"),PSpec("X","X"),PSpec("Y","Y"),PSpec("Z","Z")},{PSpec("Box","B")}},
     {"Surface","Primitive","Box 2Pt","Box2Pt","Box between two corner points",{PSpec("Point A","A"),PSpec("Point B","B")},{PSpec("Box","B")}},
@@ -859,9 +860,14 @@ const std::vector<TL_GhComponentSpec>& TL_GhComponentCatalog::All() {
     {"Surface","Freeform","Loft","Loft","Fit lofted NURBS surface through section curves",{PSpec("Curves","C"),PSpec("Options","O")},{PSpec("Loft","L")}},
     {"Surface","Freeform","Sweep1","Swp1","One-rail sweep surface",{PSpec("Rail","R"),PSpec("Sections","S")},{PSpec("Brep","S")}},
     {"Surface","Freeform","Sweep2","Swp2","Two-rail proportional sweep surface",{PSpec("Rail 1","R1"),PSpec("Rail 2","R2"),PSpec("Sections","S")},{PSpec("Brep","S")}},
+    {"Surface","Freeform","Revolve","RevSrf","Surface of revolution around an axis line",{PSpec("Profile","P"),PSpec("Axis","A"),PSpec("Domain","D")},{PSpec("Surface","S")}},
+    {"Surface","Freeform","Edge Surface","EdgeSrf","Coons surface patch from 2, 3, or 4 boundary curves",{PSpec("Curve A","A"),PSpec("Curve B","B"),PSpec("Curve C","C"),PSpec("Curve D","D")},{PSpec("Surface","S")}},
     {"Surface","Freeform","Ruled Surface","RuleSrf","Ruled surface between two curves",{PSpec("Curve A","A"),PSpec("Curve B","B")},{PSpec("Surface","S")}},
     {"Surface","Freeform","4Point Surface","Srf4Pt","Bilinear NURBS patch from 4 corner points",{PSpec("Corner A","A"),PSpec("Corner B","B"),PSpec("Corner C","C"),PSpec("Corner D","D")},{PSpec("Surface","S")}},
     {"Surface","SubD","SubD Box","SubDBox","Catmull-Clark SubD box from bounding box",{PSpec("Box","B"),PSpec("Density","D")},{PSpec("SubD","S")}},
+    {"Surface","SubD","SubD From Mesh","SubDMesh","Convert control-net polygon mesh into Catmull-Clark SubD",{PSpec("Mesh","M"),PSpec("Level","L"),PSpec("Crease","C")},{PSpec("SubD","S")}},
+    {"Surface","SubD","SubD Cylinder","SubDCyl","Smooth Catmull-Clark SubD cylinder",{PSpec("Circle","C"),PSpec("Height","H"),PSpec("Level","L")},{PSpec("SubD","S")}},
+    {"Surface","SubD","SubD Sphere","SubDSph","Smooth Catmull-Clark quad-SubD sphere",{PSpec("Center","C"),PSpec("Radius","R"),PSpec("Level","L")},{PSpec("SubD","S")}},
     {"Surface","Util","Cap Holes","Cap","Cap open planar boundary loops on mesh",{PSpec("Brep","B")},{PSpec("Brep","B"),PSpec("Valid","V")}},
 
     // ---- 7. Mesh (8) -------------------------------------------------------
@@ -3521,6 +3527,104 @@ void TL_GhDocument::EvaluateSingleNode(TL_GhNode& node) {
     std::vector<TL_GhValue> vals;
     for (const auto& b : in) for (const auto& v : b) vals.push_back(v);
     set_all(vals);
+    return;
+  }
+  if (nm == "Fillet") {
+    auto ca = list_curves(0), cb = list_curves(1);
+    double r = std::max(1e-3, num_in(2, 1.5));
+    if (!ca.empty() && !cb.empty() && ca[0] && cb[0]) {
+      ON_Arc arc;
+      ON_NurbsCurve ta, tb;
+      if (TL_FilletCurves(*ca[0], *cb[0], r, arc, &ta, &tb)) {
+        set_out(0, {TL_GhValue::MakeCurve(ta)});
+        set_out(1, {TL_GhValue::MakeCurve(tb)});
+        set_out(2, {TL_GhValue::MakeArc(arc)});
+        node.runtime_data = {TL_GhValue::MakeArc(arc)};
+        return;
+      }
+    }
+    set_all({});
+    return;
+  }
+  if (nm == "Revolve" || nm == "RevSrf") {
+    auto profs = list_curves(0);
+    ON_Line axis(ON_3dPoint(0, 0, 0), ON_3dPoint(0, 0, 10));
+    if (in.size() > 1 && !in[1].empty() && in[1][0].kind == TL_GhValueKind::Line) axis = in[1][0].line_val;
+    ON_Interval dom(0.0, 2.0 * ON_PI);
+    if (in.size() > 2 && !in[2].empty() && in[2][0].kind == TL_GhValueKind::Interval) dom = in[2][0].interval_val;
+    std::vector<TL_GhValue> srfs;
+    for (const auto& p : profs) if (p) {
+      if (ON_NurbsSurface* s = TL_RevolveCurve(*p, axis, dom.Min(), dom.Max(), nullptr)) {
+        srfs.push_back(TL_GhValue::MakeSurface(*s));
+        delete s;
+      }
+    }
+    set_all(srfs);
+    return;
+  }
+  if (nm == "Edge Surface" || nm == "EdgeSrf") {
+    ON_SimpleArray<const ON_Curve*> bnd;
+    std::vector<std::shared_ptr<ON_NurbsCurve>> hold;
+    for (size_t i = 0; i < std::min<size_t>(4, in.size()); ++i) {
+      auto cs = list_curves(i);
+      for (const auto& c : cs) if (c) { hold.push_back(c); bnd.Append(c.get()); }
+    }
+    if (bnd.Count() >= 2) {
+      if (ON_NurbsSurface* s = TL_CreateEdgeSurface(bnd, nullptr)) {
+        set_all({TL_GhValue::MakeSurface(*s)});
+        delete s;
+        return;
+      }
+    }
+    set_all({});
+    return;
+  }
+  if (nm == "SubD From Mesh" || nm == "SubDMesh") {
+    auto meshes = list_meshes(0);
+    unsigned int lvl = (unsigned int)std::clamp((int)std::lround(num_in(1, 1.0)), 1, 3);
+    bool crease = (in.size() > 2 && !in[2].empty()) ? (in[2][0].AsNumber(0.0) != 0.0) : false;
+    std::vector<TL_GhValue> out_m;
+    for (const auto& m : meshes) if (m) {
+      if (ON_SubD* sd = TL_CreateSubDFromMesh(*m, lvl, crease, nullptr)) {
+        if (ON_Mesh* sm = TL_MeshFromSubD(*sd, 0, nullptr)) {
+          out_m.push_back(TL_GhValue::MakeMesh(*sm));
+          delete sm;
+        }
+        delete sd;
+      }
+    }
+    set_all(out_m);
+    return;
+  }
+  if (nm == "SubD Cylinder" || nm == "SubDCyl") {
+    ON_Circle cir(ON_Plane::World_xy, 3.0);
+    if (!in.empty() && !in[0].empty() && in[0][0].kind == TL_GhValueKind::Circle) cir = in[0][0].circle_val;
+    double h = num_in(1, 8.0);
+    unsigned int lvl = (unsigned int)std::clamp((int)std::lround(num_in(2, 1.0)), 1, 3);
+    if (ON_SubD* sd = TL_CreateSubDCylinder(cir, h, 8, 2, lvl, nullptr)) {
+      if (ON_Mesh* sm = TL_MeshFromSubD(*sd, 0, nullptr)) {
+        set_all({TL_GhValue::MakeMesh(*sm)});
+        delete sm;
+      }
+      delete sd;
+      return;
+    }
+    set_all({});
+    return;
+  }
+  if (nm == "SubD Sphere" || nm == "SubDSph") {
+    ON_3dPoint cen = pt_in(0, ON_3dPoint::Origin);
+    double r = std::max(0.1, num_in(1, 4.0));
+    unsigned int lvl = (unsigned int)std::clamp((int)std::lround(num_in(2, 2.0)), 1, 3);
+    if (ON_SubD* sd = TL_CreateSubDSphere(cen, r, lvl, nullptr)) {
+      if (ON_Mesh* sm = TL_MeshFromSubD(*sd, 0, nullptr)) {
+        set_all({TL_GhValue::MakeMesh(*sm)});
+        delete sm;
+      }
+      delete sd;
+      return;
+    }
+    set_all({});
     return;
   }
 

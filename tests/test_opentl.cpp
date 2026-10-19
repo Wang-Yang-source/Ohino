@@ -3029,7 +3029,7 @@ void TestGrasshopperAndStudioGui() {
     // (a) Instantiate and evaluate every single battery in the 182-component catalog
     TL_GhDocument all_doc;
     const auto& specs = TL_GhComponentCatalog::All();
-    CHECK_EQ_INT((int)specs.size(), 182);
+    CHECK_EQ_INT((int)specs.size(), 188);
     int instantiated = 0;
     for (size_t i = 0; i < specs.size(); ++i) {
       const int nidx = all_doc.AddComponent(specs[i].name, 40.0f + (float)(i % 8) * 90.0f,
@@ -3141,9 +3141,221 @@ void TestGrasshopperAndStudioGui() {
   EndSection();
 }
 
+void TestStage17ModelingAndPicking() {
+  BeginSection("stage-17: revolve / edge surface / fillet, SubD primitives, scene picking");
+
+  // ---- Revolve: a half-disc profile around Z gives a full sphere of radius 3 ----------
+  {
+    ON_Circle prof_circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(1, 0, 0), ON_3dVector(0, 0, 1)), 3.0);
+    ON_NurbsCurve prof;
+    CHECK(prof_circle.GetNurbForm(prof));
+    std::shared_ptr<ON_NurbsSurface> sph(TL_RevolveCurve(prof, ON_Line(ON_3dPoint(0, 0, -10), ON_3dPoint(0, 0, 10))));
+    CHECK(sph != nullptr);
+    if (sph) {
+      CHECK(sph->IsValid());
+      CHECK(sph->IsClosed(0) || sph->IsClosed(1));
+      // Sample the surface: every point must be ~3 from the origin
+      double max_err = 0.0;
+      for (int iu = 0; iu <= 8; ++iu)
+        for (int iv = 0; iv <= 8; ++iv) {
+          const double u = sph->Domain(0).ParameterAt(iu / 8.0);
+          const double v = sph->Domain(1).ParameterAt(iv / 8.0);
+          max_err = std::max(max_err, std::fabs(sph->PointAt(u, v).DistanceTo(ON_3dPoint::Origin) - 3.0));
+        }
+      CHECK(max_err < 1e-3);
+      std::printf("   revolve sphere: max |r-3| = %.3e\n", max_err);
+    }
+    // Partial revolve: a line profile (0,0,0)->(3,0,3) swept 0..90 deg about Z is a quarter
+    // cone, so every sampled point must satisfy x >= 0, y >= 0 and reach y = 3.
+    {
+      ON_LineCurve cone_prof(ON_3dPoint(0, 0, 0), ON_3dPoint(3, 0, 3));
+      std::shared_ptr<ON_NurbsSurface> quarter(TL_RevolveCurve(cone_prof, ON_Line(ON_3dPoint(0, 0, -10), ON_3dPoint(0, 0, 10)), 0.0, 0.5 * ON_PI));
+      CHECK(quarter != nullptr);
+      if (quarter) {
+        double min_x = 1e30, min_y = 1e30, max_y = -1e30;
+        for (int iu = 0; iu <= 8; ++iu)
+          for (int iv = 0; iv <= 8; ++iv) {
+            const ON_3dPoint p = quarter->PointAt(quarter->Domain(0).ParameterAt(iu / 8.0),
+                                                  quarter->Domain(1).ParameterAt(iv / 8.0));
+            min_x = std::min(min_x, p.x); min_y = std::min(min_y, p.y); max_y = std::max(max_y, p.y);
+          }
+        CHECK(min_x > -1e-9);
+        CHECK(min_y > -1e-9);
+        CHECK(std::fabs(max_y - 3.0) < 1e-6);
+        std::printf("   revolve quarter: x>=%.3e y in [%.3e, %.6f]\n", min_x, min_y, max_y);
+      }
+    }
+  }
+
+  // ---- EdgeSurface: Coons patch through 4 boundary curves, corners matched ------------
+  {
+    ON_NurbsCurve s, e, n, w;
+    s.Create(3, false, 2, 2); s.MakeClampedUniformKnotVector(1.0); s.SetDomain(0, 1);
+    s.SetCV(0, ON_3dPoint(0, 0, 0)); s.SetCV(1, ON_3dPoint(10, 0, 0));
+    e.Create(3, false, 2, 2); e.MakeClampedUniformKnotVector(1.0); e.SetDomain(0, 1);
+    e.SetCV(0, ON_3dPoint(10, 0, 0)); e.SetCV(1, ON_3dPoint(10, 10, 3));
+    n.Create(3, false, 2, 2); n.MakeClampedUniformKnotVector(1.0); n.SetDomain(0, 1);
+    n.SetCV(0, ON_3dPoint(0, 10, 3)); n.SetCV(1, ON_3dPoint(10, 10, 3));
+    w.Create(3, false, 2, 2); w.MakeClampedUniformKnotVector(1.0); w.SetDomain(0, 1);
+    w.SetCV(0, ON_3dPoint(0, 0, 0)); w.SetCV(1, ON_3dPoint(0, 10, 3));
+
+    ON_SimpleArray<const ON_Curve*> bnd;
+    bnd.Append(&s); bnd.Append(&e); bnd.Append(&n); bnd.Append(&w);
+    std::shared_ptr<ON_NurbsSurface> patch(TL_CreateEdgeSurface(bnd));
+    CHECK(patch != nullptr);
+    if (patch) {
+      CHECK(patch->IsValid());
+      const double c0 = patch->PointAt(0.0, 0.0).DistanceTo(ON_3dPoint(0, 0, 0));
+      const double c1 = patch->PointAt(1.0, 0.0).DistanceTo(ON_3dPoint(10, 0, 0));
+      const double c2 = patch->PointAt(1.0, 1.0).DistanceTo(ON_3dPoint(10, 10, 3));
+      const double c3 = patch->PointAt(0.0, 1.0).DistanceTo(ON_3dPoint(0, 10, 3));
+      CHECK(c0 < 1e-6); CHECK(c1 < 1e-6); CHECK(c2 < 1e-6); CHECK(c3 < 1e-6);
+      // Boundary midpoints must lie on the input curves
+      const ON_3dPoint mid_s = 0.5 * (s.PointAtStart() + s.PointAtEnd());
+      CHECK(patch->PointAt(0.5, 0.0).DistanceTo(mid_s) < 1e-6);
+      std::printf("   edge surface: corners %.2e %.2e %.2e %.2e, mid-S %.2e\n",
+                  c0, c1, c2, c3, patch->PointAt(0.5, 0.0).DistanceTo(mid_s));
+      // Degenerate input (one curve) must be rejected
+      ON_SimpleArray<const ON_Curve*> one; one.Append(&s);
+      CHECK(TL_CreateEdgeSurface(one) == nullptr);
+    }
+  }
+
+  // ---- Fillet: two perpendicular lines, exact tangency ------------------------------
+  {
+    ON_LineCurve la(ON_3dPoint(0, 0, 0), ON_3dPoint(10, 0, 0));
+    ON_LineCurve lb(ON_3dPoint(10, 0, 0), ON_3dPoint(10, 10, 0));
+    ON_Arc arc;
+    ON_NurbsCurve ta, tb;
+    CHECK(TL_FilletCurves(la, lb, 2.0, arc, &ta, &tb));
+    CHECK(arc.IsValid());
+    CHECK(std::fabs(arc.Radius() - 2.0) < 1e-9);
+    // Tangent point on A is 8 units from the origin along +X; on B 2 units along +Y
+    const ON_3dPoint t_a = arc.StartPoint().DistanceTo(ON_3dPoint(8, 0, 0)) <
+                           arc.EndPoint().DistanceTo(ON_3dPoint(8, 0, 0)) ? arc.StartPoint() : arc.EndPoint();
+    const ON_3dPoint t_b = (t_a.DistanceTo(arc.StartPoint()) < 1e-9) ? arc.EndPoint() : arc.StartPoint();
+    CHECK(t_a.DistanceTo(ON_3dPoint(8, 0, 0)) < 1e-6);
+    CHECK(t_b.DistanceTo(ON_3dPoint(10, 2, 0)) < 1e-6);
+    // Arc midpoint is tangent to nothing but sits at distance radius from center (10,2,0)... center = (8,2,0)
+    const ON_3dPoint center_test(8, 2, 0);
+    CHECK(std::fabs(arc.MidPoint().DistanceTo(center_test) - 2.0) < 1e-9);
+    CHECK(ta.IsValid()); CHECK(tb.IsValid());
+    CHECK(std::fabs(ta.PointAtEnd().DistanceTo(ON_3dPoint(8, 0, 0))) < 1e-6);
+    CHECK(std::fabs(tb.PointAtStart().DistanceTo(ON_3dPoint(10, 2, 0))) < 1e-6);
+    // Parallel lines have no fillet
+    ON_LineCurve lc(ON_3dPoint(0, 5, 0), ON_3dPoint(10, 5, 0));
+    ON_Arc bad;
+    CHECK(!TL_FilletCurves(la, lc, 2.0, bad, nullptr, nullptr));
+    std::printf("   fillet: r=%.6f tangency %.2e / %.2e\n", arc.Radius(),
+                t_a.DistanceTo(ON_3dPoint(8, 0, 0)), t_b.DistanceTo(ON_3dPoint(10, 2, 0)));
+  }
+
+  // ---- SubD primitives: cylinder and sphere -------------------------------
+  {
+    ON_Circle cir(ON_Plane::World_xy, 5.0);
+    std::shared_ptr<ON_SubD> cyl(TL_CreateSubDCylinder(cir, 10.0, 8, 2, 2));
+    CHECK(cyl != nullptr);
+    if (cyl) {
+      std::shared_ptr<ON_Mesh> cm(TL_MeshFromSubD(*cyl, 0));
+      CHECK(cm != nullptr);
+      if (cm) {
+        CHECK(cm->VertexCount() > 100);
+        CHECK(cm->IsClosed());
+        const ON_BoundingBox bb = cm->BoundingBox();
+        CHECK(std::fabs(bb.m_max.z - 10.0) < 1.5);   // limit surface stays near requested height
+        CHECK(std::fabs(bb.m_min.z) < 1.5);
+        CHECK(std::fabs(bb.m_max.x - 5.0) < 0.08);   // radial scale compensated to the base circle
+        std::printf("   SubD cylinder: %d verts, %d faces, z %.3f..%.3f, x %.3f..%.3f\n",
+                    cm->VertexCount(), cm->FaceCount(), bb.m_min.z, bb.m_max.z, bb.m_min.x, bb.m_max.x);
+      }
+    }
+    std::shared_ptr<ON_SubD> sph(TL_CreateSubDSphere(ON_3dPoint(1, 2, 3), 4.0, 2));
+    CHECK(sph != nullptr);
+    if (sph) {
+      std::shared_ptr<ON_Mesh> sm(TL_MeshFromSubD(*sph, 0));
+      CHECK(sm != nullptr);
+      if (sm) {
+        CHECK(sm->VertexCount() > 40);
+        CHECK(sm->IsClosed());
+        double max_r = 0.0, min_r = 1e30;
+        for (int i = 0; i < sm->VertexCount(); ++i) {
+          const double r = ON_3dPoint(sm->m_V[i]).DistanceTo(ON_3dPoint(1, 2, 3));
+          max_r = std::max(max_r, r); min_r = std::min(min_r, r);
+        }
+        CHECK(std::fabs(max_r - 4.0) < 0.35);
+        CHECK(std::fabs(min_r - 4.0) < 0.35);
+        std::printf("   SubD sphere: %d verts, radius %.3f..%.3f (target 4.000)\n",
+                    sm->VertexCount(), min_r, max_r);
+      }
+    }
+    // SubD from mesh round-trip
+    ON_Mesh box_mesh;
+    box_mesh.m_V.Append(ON_3fPoint(0, 0, 0)); box_mesh.m_V.Append(ON_3fPoint(1, 0, 0));
+    box_mesh.m_V.Append(ON_3fPoint(1, 1, 0)); box_mesh.m_V.Append(ON_3fPoint(0, 1, 0));
+    box_mesh.m_V.Append(ON_3fPoint(0, 0, 1)); box_mesh.m_V.Append(ON_3fPoint(1, 0, 1));
+    box_mesh.m_V.Append(ON_3fPoint(1, 1, 1)); box_mesh.m_V.Append(ON_3fPoint(0, 1, 1));
+    const int quads[6][4] = {{0,3,2,1},{4,5,6,7},{0,1,5,4},{1,2,6,5},{2,3,7,6},{3,0,4,7}};
+    for (int f = 0; f < 6; ++f) {
+      ON_MeshFace mf;
+      for (int k = 0; k < 4; ++k) mf.vi[k] = quads[f][k];
+      box_mesh.m_F.Append(mf);
+    }
+    std::shared_ptr<ON_SubD> sd(TL_CreateSubDFromMesh(box_mesh, 2, false));
+    CHECK(sd != nullptr);
+    if (sd) {
+      std::shared_ptr<ON_Mesh> sdm(TL_MeshFromSubD(*sd, 0));
+      CHECK(sdm != nullptr);
+      if (sdm) CHECK(sdm->FaceCount() > 6);
+    }
+  }
+
+  // ---- Scene picking: axis-aligned objects, pick from the Top view -------------------
+  {
+    opentl::mvp::SceneDocument sc;
+    const uint64_t id_a = sc.AddPoint(ON_3dPoint(-20, -20, 0), "A");
+    const uint64_t id_b = sc.AddPoint(ON_3dPoint(20, 20, 0), "B");
+    const uint64_t id_c = sc.AddCircle(ON_Circle(ON_Plane::World_xy, 5.0), "C");
+    TL_FourViewLayout lay = TL_FourViewLayout::Default(1600, 1000);
+    ON_BoundingBox bb;
+    for (const auto& o : sc.Objects()) { const ON_BoundingBox b = o.GetBoundingBox(); if (b.IsValid()) { if (bb.IsValid()) bb.Union(b); else bb = b; } }
+    lay.ZoomToFitAll(bb);
+
+    // Project each object's location into the Top view and pick it back
+    ON_2dPoint pa, pb, pc;
+    CHECK(lay.View(0).WorldToScreen(ON_3dPoint(-20, -20, 0), pa));
+    CHECK(lay.View(0).WorldToScreen(ON_3dPoint(20, 20, 0), pb));
+    CHECK(lay.View(0).WorldToScreen(ON_3dPoint(5, 0, 0), pc));
+    ON_3dPoint pivot;
+    CHECK_EQ_INT((int)TL_PickSceneObjectAtScreen(sc, lay, 0, (float)pa.x, (float)pa.y, 10.0, &pivot), (int)id_a);
+    CHECK_EQ_INT((int)TL_PickSceneObjectAtScreen(sc, lay, 0, (float)pb.x, (float)pb.y, 10.0, &pivot), (int)id_b);
+    CHECK_EQ_INT((int)TL_PickSceneObjectAtScreen(sc, lay, 0, (float)pc.x, (float)pc.y, 10.0, &pivot), (int)id_c);
+    CHECK(std::fabs(pivot.x) < 1e-6 && std::fabs(pivot.y) < 1e-6);
+    // Empty space picks nothing
+    CHECK_EQ_INT((int)TL_PickSceneObjectAtScreen(sc, lay, 0, 5.0f, 5.0f, 3.0), 0);
+    std::printf("   picking: A=%llu B=%llu C=%llu pivot=(%.3f,%.3f,%.3f)\n",
+                (unsigned long long)id_a, (unsigned long long)id_b, (unsigned long long)id_c,
+                pivot.x, pivot.y, pivot.z);
+
+    // Selection drives _Delete: picked object is removed, not the last one
+    TL_StudioInputState st;
+    TL_GhDocument gd;
+    const TL_GuiStudioRects rects = TL_ComputeStudioRects(1600, 1000);
+    st.selected_object_id = id_a;
+    CHECK(TL_ExecuteStudioCommand("_Delete", &sc, &gd, &lay, &rects, st));
+    CHECK_EQ_INT((int)sc.ObjectCount(), 2);
+    bool still_has_a = false;
+    for (const auto& o : sc.Objects()) if (o.id == id_a) still_has_a = true;
+    CHECK(!still_has_a);
+    // ... and _Undo brings it back
+    CHECK(TL_ExecuteStudioCommand("_Undo", &sc, &gd, &lay, &rects, st));
+    CHECK_EQ_INT((int)sc.ObjectCount(), 3);
+  }
+
+  EndSection();
+}
+
 int main() {
   ON::Begin();
-
   std::printf("OpenTL MVP test suite\n");
   std::printf("=====================\n");
 
@@ -3167,6 +3379,7 @@ int main() {
   TestIntersectionStage6();
   TestBooleansAndSubDStage8();
   TestGrasshopperAndStudioGui();
+  TestStage17ModelingAndPicking();
 
   std::printf("\n=====================\n");
   std::printf("sections=%d checks=%d failures=%d failed_sections=%d\n", g_state.section_index,

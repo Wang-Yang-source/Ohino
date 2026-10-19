@@ -1,4 +1,5 @@
 #include "opentl/fitting_loft_sweep/tl_fitting_loft_sweep.h"
+#include "opentl/closest_point/tl_closest_point.h"
 
 #include <algorithm>
 #include <cmath>
@@ -711,4 +712,316 @@ TL_FUNCTION ON_NurbsCurve* TL_OffsetCurve(
     out->SetCV(i, cvs[static_cast<size_t>(i)]);
 
   return out;
+}
+
+// ============================================================================
+// TL_RevolveCurve -- exact NURBS surface of revolution via ON_RevSurface
+// ============================================================================
+
+TL_FUNCTION ON_NurbsSurface* TL_RevolveCurve(
+  const ON_Curve& profile,
+  const ON_Line& axis_line,
+  double start_angle_radians,
+  double end_angle_radians,
+  ON_NurbsSurface* result
+)
+{
+  if (!profile.IsValid() || !axis_line.IsValid() || axis_line.Length() <= 1e-12)
+    return nullptr;
+
+  const double sweep = end_angle_radians - start_angle_radians;
+  if (std::fabs(sweep) <= 1e-9)
+    return nullptr;
+
+  ON_RevSurface rev;
+  rev.m_curve = profile.DuplicateCurve();
+  rev.m_axis = axis_line;
+  const double a0 = std::min(start_angle_radians, end_angle_radians);
+  const double a1 = std::max(start_angle_radians, end_angle_radians);
+  rev.m_angle.Set(a0, a1);
+  rev.m_t = rev.m_angle;
+
+  ON_NurbsSurface* out = (nullptr != result) ? result : ON_NurbsSurface::New();
+  if (rev.GetNurbForm(*out) <= 0 || !out->IsValid())
+  {
+    if (nullptr == result)
+      delete out;
+    return nullptr;
+  }
+  return out;
+}
+
+// ============================================================================
+// TL_CreateEdgeSurface -- Coons / Gordon-Coons 2/3/4-boundary NURBS patch
+// ============================================================================
+
+TL_FUNCTION ON_NurbsSurface* TL_CreateEdgeSurface(
+  const ON_SimpleArray<const ON_Curve*>& boundary_curves,
+  ON_NurbsSurface* result
+)
+{
+  std::vector<const ON_Curve*> crvs;
+  for (int i = 0; i < boundary_curves.Count(); ++i)
+  {
+    if (nullptr != boundary_curves[i] && boundary_curves[i]->IsValid())
+      crvs.push_back(boundary_curves[i]);
+  }
+  if (crvs.size() < 2)
+    return nullptr;
+
+  if (crvs.size() == 2)
+  {
+    ON_SimpleArray<const ON_Curve*> pair;
+    pair.Append(crvs[0]);
+    pair.Append(crvs[1]);
+    return TL_LoftCurves(pair, result);
+  }
+
+  // Order 3 or 4 boundary curves into a contiguous loop: C0 (South, u:0->1, v=0),
+  // C1 (East, v:0->1, u=1), C2 (North, u:0->1, v=1), C3 (West, v:0->1, u=0).
+  std::vector<ON_NurbsCurve> ordered(4);
+  if (!crvs[0]->GetNurbForm(ordered[0]))
+    return nullptr;
+
+  std::vector<bool> used(crvs.size(), false);
+  used[0] = true;
+
+  auto pick_next = [&](const ON_3dPoint& target_pt, ON_NurbsCurve& out_nc, bool want_start_at_target) -> bool {
+    int best_idx = -1;
+    bool best_rev = false;
+    double best_d = 1e30;
+    for (size_t i = 0; i < crvs.size(); ++i)
+    {
+      if (used[i]) continue;
+      const double ds = target_pt.DistanceTo(crvs[i]->PointAtStart());
+      const double de = target_pt.DistanceTo(crvs[i]->PointAtEnd());
+      if (ds < best_d) { best_d = ds; best_idx = (int)i; best_rev = !want_start_at_target; }
+      if (de < best_d) { best_d = de; best_idx = (int)i; best_rev = want_start_at_target; }
+    }
+    if (best_idx < 0) return false;
+    used[(size_t)best_idx] = true;
+    if (!crvs[(size_t)best_idx]->GetNurbForm(out_nc)) return false;
+    if (best_rev) out_nc.Reverse();
+    return true;
+  };
+
+  // South runs from (0,0) to (1,0)
+  // East runs from (1,0) to (1,1) -> starts at South.End
+  if (!pick_next(ordered[0].PointAtEnd(), ordered[1], true))
+    return nullptr;
+
+  if (crvs.size() == 3)
+  {
+    // 3-sided patch: third curve runs from (0,0) to (1,1) as West, North degenerates to point (1,1)
+    if (!pick_next(ordered[0].PointAtStart(), ordered[3], true))
+      return nullptr;
+    const ON_3dPoint apex = ordered[1].PointAtEnd();
+    ordered[2].Create(3, false, 2, 2);
+    ordered[2].MakeClampedUniformKnotVector(1.0);
+    ordered[2].SetCV(0, apex);
+    ordered[2].SetCV(1, apex);
+  }
+  else
+  {
+    // 4-sided patch: North runs from (0,1) to (1,1) -> ends at East.End
+    if (!pick_next(ordered[1].PointAtEnd(), ordered[2], false))
+      return nullptr;
+    // West runs from (0,0) to (0,1) -> starts at South.Start
+    if (!pick_next(ordered[0].PointAtStart(), ordered[3], true))
+      return nullptr;
+  }
+
+  for (int k = 0; k < 4; ++k)
+    ordered[(size_t)k].SetDomain(0.0, 1.0);
+
+  const ON_3dPoint P00 = ordered[0].PointAtStart();
+  const ON_3dPoint P10 = ordered[0].PointAtEnd();
+  const ON_3dPoint P01 = ordered[2].PointAtStart();
+  const ON_3dPoint P11 = ordered[2].PointAtEnd();
+
+  const int N = 12;
+  const int order = 4;
+  ON_NurbsSurface* srf = (nullptr != result) ? result : ON_NurbsSurface::New();
+  if (!srf->Create(3, false, order, order, N, N))
+  {
+    if (nullptr == result) delete srf;
+    return nullptr;
+  }
+  srf->MakeClampedUniformKnotVector(0, 1.0);
+  srf->MakeClampedUniformKnotVector(1, 1.0);
+  srf->SetDomain(0, 0.0, 1.0);
+  srf->SetDomain(1, 0.0, 1.0);
+
+  ON_NurbsCurve basis(3, false, order, N);
+  basis.MakeClampedUniformKnotVector(1.0);
+  basis.SetDomain(0.0, 1.0);
+  std::vector<double> grev((size_t)N, 0.0);
+  if (!basis.GetGrevilleAbcissae(grev.data()))
+  {
+    for (int i = 0; i < N; ++i) grev[(size_t)i] = (double)i / (double)(N - 1);
+  }
+
+  std::vector<double> A((size_t)(N * N), 0.0);
+  std::vector<double> row;
+  for (int i = 0; i < N; ++i)
+  {
+    EvaluateClampedCurveBasisRow(basis, grev[(size_t)i], row);
+    for (int j = 0; j < N; ++j) A[(size_t)(i * N + j)] = row[(size_t)j];
+  }
+
+  // Evaluate Coons patch at Greville grid (u_i, v_j) and solve 2D tensor-product control net
+  std::vector<std::vector<ON_3dPoint>> temp_cols((size_t)N, std::vector<ON_3dPoint>((size_t)N));
+  for (int j = 0; j < N; ++j)
+  {
+    const double v = std::clamp(grev[(size_t)j], 0.0, 1.0);
+    std::vector<ON_3dPoint> rhs_u((size_t)N);
+    for (int i = 0; i < N; ++i)
+    {
+      const double u = std::clamp(grev[(size_t)i], 0.0, 1.0);
+      const ON_3dPoint Lc = (1.0 - v) * ordered[0].PointAt(u) + v * ordered[2].PointAt(u);
+      const ON_3dPoint Ld = (1.0 - u) * ordered[3].PointAt(v) + u * ordered[1].PointAt(v);
+      const ON_3dPoint B  = (1.0 - u) * (1.0 - v) * P00 + u * (1.0 - v) * P10 +
+                            (1.0 - u) * v * P01         + u * v * P11;
+      rhs_u[(size_t)i] = Lc + Ld - B;
+    }
+    std::vector<ON_3dPoint> solved_u;
+    if (!SolveLinearSystem3d(N, A, rhs_u, solved_u)) solved_u = rhs_u;
+    for (int i = 0; i < N; ++i) temp_cols[(size_t)i][(size_t)j] = solved_u[(size_t)i];
+  }
+
+  for (int i = 0; i < N; ++i)
+  {
+    std::vector<ON_3dPoint> solved_v;
+    if (!SolveLinearSystem3d(N, A, temp_cols[(size_t)i], solved_v)) solved_v = temp_cols[(size_t)i];
+    for (int j = 0; j < N; ++j) srf->SetCV(i, j, solved_v[(size_t)j]);
+  }
+  return srf;
+}
+
+// ============================================================================
+// TL_FilletCurves -- exact G1 circular fillet arc + curve trimming
+// ============================================================================
+
+namespace {
+
+/** Minimum distance from `p` to `crv` (coarse sampling + Newton refinement). */
+double PointToCurveDistance(const ON_Curve& crv, const ON_3dPoint& p)
+{
+  double t = 0.0;
+  if (TL_GetCurveClosestPoint(crv, p, &t))
+    return crv.PointAt(t).DistanceTo(p);
+  const ON_Interval dom = crv.Domain();
+  double best = 1e30;
+  const int n = 256;
+  for (int i = 0; i <= n; ++i)
+    best = std::min(best, crv.PointAt(dom.ParameterAt((double)i / (double)n)).DistanceTo(p));
+  return best;
+}
+
+bool SubCurveToNurbs(const ON_Curve& crv, double t0, double t1, ON_NurbsCurve& out){
+  if (t1 <= t0 + 1e-12) return false;
+  const int deg = std::clamp(crv.Degree(), 1, 3);
+  const int cv_count = (deg == 1) ? 2 : 12;
+  if (!out.Create(3, false, deg + 1, cv_count)) return false;
+  out.MakeClampedUniformKnotVector(1.0);
+  out.SetDomain(t0, t1);
+  if (cv_count == 2)
+  {
+    out.SetCV(0, crv.PointAt(t0));
+    out.SetCV(1, crv.PointAt(t1));
+    return true;
+  }
+  for (int i = 0; i < cv_count; ++i)
+  {
+    const double u = (double)i / (double)(cv_count - 1);
+    out.SetCV(i, crv.PointAt(t0 + u * (t1 - t0)));
+  }
+  return true;
+}
+
+} // namespace
+
+TL_FUNCTION bool TL_FilletCurves(
+  const ON_Curve& curve_a,
+  const ON_Curve& curve_b,
+  double radius,
+  ON_Arc& out_arc,
+  ON_NurbsCurve* out_trimmed_a,
+  ON_NurbsCurve* out_trimmed_b
+)
+{
+  if (!curve_a.IsValid() || !curve_b.IsValid() || radius <= 1e-9)
+    return false;
+
+  // Find corner / intersection parameters `(ta, tb)` by closest-endpoint or curve intersection
+  const ON_Interval dom_a = curve_a.Domain();
+  const ON_Interval dom_b = curve_b.Domain();
+  double ta = dom_a.Max(), tb = dom_b.Min();
+  double best_d = 1e30;
+  const double cand_a[2] = { dom_a.Min(), dom_a.Max() };
+  const double cand_b[2] = { dom_b.Min(), dom_b.Max() };
+  for (double ca : cand_a)
+  {
+    for (double cb : cand_b)
+    {
+      const double d = curve_a.PointAt(ca).DistanceTo(curve_b.PointAt(cb));
+      if (d < best_d) { best_d = d; ta = ca; tb = cb; }
+    }
+  }
+
+  const ON_3dPoint corner = 0.5 * (curve_a.PointAt(ta) + curve_b.PointAt(tb));
+  // Unit directions pointing AWAY from the corner along each curve's interior
+  const double step_a = (ta == dom_a.Min()) ? 0.05 * dom_a.Length() : -0.05 * dom_a.Length();
+  const double step_b = (tb == dom_b.Min()) ? 0.05 * dom_b.Length() : -0.05 * dom_b.Length();
+  ON_3dVector ua = curve_a.PointAt(ta + step_a) - corner;
+  ON_3dVector ub = curve_b.PointAt(tb + step_b) - corner;
+  if (!ua.Unitize() || !ub.Unitize())
+    return false;
+
+  const double cos_theta = std::clamp(ON_DotProduct(ua, ub), -1.0, 1.0);
+  const double theta = std::acos(cos_theta);
+  if (theta <= 1e-4 || theta >= ON_PI - 1e-4)
+    return false;
+
+  const double half_theta = 0.5 * theta;
+  const double tan_dist = radius / std::tan(half_theta);
+  const double center_dist = radius / std::sin(half_theta);
+
+  ON_3dVector bisector = ua + ub;
+  if (!bisector.Unitize())
+    return false;
+
+  const ON_3dPoint p_tan_a = corner + ua * tan_dist;
+  const ON_3dPoint p_tan_b = corner + ub * tan_dist;
+  const ON_3dPoint center  = corner + bisector * center_dist;
+  const ON_3dPoint p_mid   = center - bisector * radius;
+
+  // Reject degenerate/non-tangent configurations (parallel, tangent, or crossing without a
+  // corner): both tangent points must actually lie on their curves.
+  const double scale = std::max(1.0, std::max(radius, std::max(curve_a.PointAtStart().DistanceTo(curve_a.PointAtEnd()),
+                                                              curve_b.PointAtStart().DistanceTo(curve_b.PointAtEnd()))));
+  const double tangency_tol = 1e-4 * scale;
+  if (PointToCurveDistance(curve_a, p_tan_a) > tangency_tol ||
+      PointToCurveDistance(curve_b, p_tan_b) > tangency_tol)
+    return false;
+
+  out_arc = ON_Arc(p_tan_a, p_mid, p_tan_b);
+  if (!out_arc.IsValid())
+    return false;
+
+  if (nullptr != out_trimmed_a)
+  {
+    const double len_a = std::max(1e-6, curve_a.PointAtStart().DistanceTo(curve_a.PointAtEnd()));
+    const double dt_a = std::min(0.95, tan_dist / len_a) * dom_a.Length();
+    if (ta == dom_a.Max()) SubCurveToNurbs(curve_a, dom_a.Min(), dom_a.Max() - dt_a, *out_trimmed_a);
+    else                   SubCurveToNurbs(curve_a, dom_a.Min() + dt_a, dom_a.Max(), *out_trimmed_a);
+  }
+  if (nullptr != out_trimmed_b)
+  {
+    const double len_b = std::max(1e-6, curve_b.PointAtStart().DistanceTo(curve_b.PointAtEnd()));
+    const double dt_b = std::min(0.95, tan_dist / len_b) * dom_b.Length();
+    if (tb == dom_b.Min()) SubCurveToNurbs(curve_b, dom_b.Min() + dt_b, dom_b.Max(), *out_trimmed_b);
+    else                   SubCurveToNurbs(curve_b, dom_b.Min(), dom_b.Max() - dt_b, *out_trimmed_b);
+  }
+  return true;
 }

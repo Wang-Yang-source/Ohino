@@ -664,6 +664,86 @@ int GhCanvasNodeAt(const TL_GhDocument& gh, const TL_GuiStudioRects& rects,
 
 }  // namespace
 
+uint64_t TL_PickSceneObjectAtScreen(
+  const opentl::mvp::SceneDocument& scene,
+  const TL_FourViewLayout& layout,
+  int view_index,
+  float screen_x,
+  float screen_y,
+  double pixel_tol,
+  ON_3dPoint* out_pivot)
+{
+  const TL_Viewport& vp = layout.View(std::clamp(view_index, 0, 3));
+  uint64_t best_id = 0;
+  double best_d = std::max(1.0, pixel_tol);
+
+  auto consider = [&](uint64_t id, const ON_3dPoint& p) {
+    ON_2dPoint s2;
+    if (!vp.WorldToScreen(p, s2)) return;
+    const double d = std::hypot(s2.x - (double)screen_x, s2.y - (double)screen_y);
+    if (d <= best_d) { best_d = d; best_id = id; }
+  };
+
+  for (const auto& obj : scene.Objects())
+  {
+    switch (obj.kind)
+    {
+    case opentl::mvp::ObjectKind::Point:
+      consider(obj.id, obj.point_val);
+      break;
+    case opentl::mvp::ObjectKind::Line:
+      for (int k = 0; k <= 8; ++k)
+        consider(obj.id, obj.line_val.PointAt((double)k / 8.0));
+      break;
+    case opentl::mvp::ObjectKind::Polyline:
+      for (int i = 0; i < obj.polyline_val.Count(); ++i)
+        consider(obj.id, obj.polyline_val[i]);
+      break;
+    case opentl::mvp::ObjectKind::Circle:
+      for (int k = 0; k < 32; ++k)
+        consider(obj.id, obj.circle_val.PointAt(2.0 * ON_PI * (double)k / 32.0));
+      break;
+    case opentl::mvp::ObjectKind::Arc:
+      for (int k = 0; k <= 16; ++k)
+      {
+        const ON_Interval dom = obj.arc_val.Domain();
+        consider(obj.id, obj.arc_val.PointAt(dom.ParameterAt((double)k / 16.0)));
+      }
+      break;
+    case opentl::mvp::ObjectKind::Plane:
+    {
+      const ON_Plane& pl = obj.plane_val;
+      for (int iu = -1; iu <= 1; ++iu)
+        for (int iv = -1; iv <= 1; ++iv)
+          consider(obj.id, pl.origin + pl.xaxis * (5.0 * iu) + pl.yaxis * (5.0 * iv));
+      break;
+    }
+    case opentl::mvp::ObjectKind::NurbsCurve:
+      if (obj.nurbs_val.IsValid())
+      {
+        const ON_Interval dom = obj.nurbs_val.Domain();
+        for (int k = 0; k <= 32; ++k)
+          consider(obj.id, obj.nurbs_val.PointAt(dom.ParameterAt((double)k / 32.0)));
+      }
+      break;
+    default:
+      break;
+    }
+  }
+
+  if (0 != best_id && nullptr != out_pivot)
+  {
+    for (const auto& obj : scene.Objects())
+    {
+      if (obj.id != best_id) continue;
+      const ON_BoundingBox bb = obj.GetBoundingBox();
+      if (bb.IsValid()) *out_pivot = bb.Center();
+      break;
+    }
+  }
+  return best_id;
+}
+
 bool TL_ExecuteStudioCommand(
   const std::string& command_line,
   opentl::mvp::SceneDocument* scene,
@@ -711,9 +791,18 @@ bool TL_ExecuteStudioCommand(
       return false;
     }
     push_undo();
-    const uint64_t last_id = scene->Objects().back().id;
-    scene->DeleteObject(last_id);
-    set_fb("COMMAND: _DELETE (REMOVED OBJECT #" + std::to_string(last_id) + ")");
+    uint64_t target = state.selected_object_id;
+    bool found = false;
+    if (0 != target)
+    {
+      for (const auto& o : scene->Objects())
+        if (o.id == target) { found = true; break; }
+    }
+    if (!found)
+      target = scene->Objects().back().id;
+    scene->DeleteObject(target);
+    state.selected_object_id = 0;
+    set_fb("COMMAND: _DELETE (REMOVED OBJECT #" + std::to_string(target) + ")");
     return true;
   }
 
@@ -1065,6 +1154,18 @@ bool TL_ProcessStudioInputEvent(const TL_StudioInputEvent& ev, const TL_GuiStudi
                 return true;
               }
             }
+          }
+        }
+        if (ev.button == 1 && ev.clicks == 1 && scene)
+        {
+          ON_3dPoint pivot = ON_3dPoint::Origin;
+          const uint64_t hit = TL_PickSceneObjectAtScreen(*scene, layout, hovered, ev.x, ev.y, 10.0, &pivot);
+          state.selected_object_id = hit;
+          if (0 != hit)
+          {
+            state.gumball_origin = pivot;
+            refresh_status();
+            return true;
           }
         }
         state.dragging_view = true;

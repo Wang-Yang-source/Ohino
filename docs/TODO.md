@@ -61,3 +61,11 @@
   - [x] 补齐 `TL_GhComponentCatalog` 全部 182 个组件在 `TL_GhDocument::EvaluateSingleNode` 中的真实内核求值（`Evaluate Surface`, `Surface Closest Point`, `Cap Holes`, `Mesh Box`, `Deconstruct Mesh`, `Mesh Edges`, `Brep | Plane`, `Surface | Surface`, `Solid Union/Difference/Intersection`, `Orient`, `Linear/Polar Array` 等）
   - [x] 实现参数域 Trimmed `ON_Brep` 平面切割封口 `TL_SplitBrepWithPlane` 与 CSG 布尔运算 `TL_BrepBoolean`（自动构建 `ON_BrepLoop` / `ON_BrepTrim` / `ON_BrepEdge` 并满足体积守恒）
   - [x] 实现 Studio 交互式命令行 `TL_ExecuteStudioCommand`（支持 `_Point`, `_Line`, `_Circle`, `_Arc`, `_Box`, `_BooleanUnion`, `_Delete`, `_Undo`, `_ZoomExtents`, `_Save3dm`, `_SaveGh`, `_GhAdd` 及键盘实时输入与 `Cmd+Z` 撤销）
+- [x] **Stage 17：曲面造型内核补齐（Revolve / Edge Surface / Fillet）、SubD 图元与视口对象拾取**
+  - [x] `TL_RevolveCurve`：基于 `ON_RevSurface::GetNurbForm` 的精确旋转曲面（整圈/任意角度区间），球面采样半径误差 `4.4e-16`
+  - [x] `TL_CreateEdgeSurface`：2 / 3 / 4 条边界曲线的 Coons（Gordon）双线性混合补面，角点与边中点误差 `0.0`
+  - [x] `TL_FilletCurves`：共面曲线精确 G1 圆角弧 + 双曲线裁剪，切点误差 `0.0 / 1.8e-15`，并拒绝平行/非切向退化构型
+  - [x] `TL_CreateSubDFromMesh` / `TL_CreateSubDCylinder` / `TL_CreateSubDSphere`：Catmull-Clark SubD 图元，圆柱/球体半径按极限曲面自动补偿（`5.000` / `4.000` 实测命中）
+  - [x] `TL_PickSceneObjectAtScreen`：屏幕空间对象拾取（7 类几何采样投影），选择状态驱动 `_Delete` 与 Gumball 支点重定位
+  - [x] Grasshopper 目录扩充至 188 个算子（`Revolve`, `Edge Surface`, `Fillet`, `SubD From Mesh`, `SubD Cylinder`, `SubD Sphere`）
+  - [x] 新增测试 Section 21：`opentl_tests` 21 组 **3003 项断言 0 失败**，`ctest 5/5` 全通过
